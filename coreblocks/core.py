@@ -32,6 +32,7 @@ from coreblocks.peripherals.bus_adapter import WishboneMasterAdapter
 from coreblocks.peripherals.wishbone import WishboneMaster, WishboneInterface
 from coreblocks.priv.vmem.tlb import FullyAssociativeTLB, SetAssociativeTLB
 from coreblocks.priv.vmem.walker import PageTableWalker
+from coreblocks.debug.debug_module import DebugModule
 from transactron.lib.metrics import HwMetricsEnabledKey, TaggedCounter
 from transactron.evlog import EvLogEnabledKey
 
@@ -146,6 +147,8 @@ class Core(Component):
             tags=range(gen_params.announcement_superscalarity + 1),
         )
 
+        self.debug_module = DebugModule(self.gen_params)
+
     def elaborate(self, platform):
         m = TModule()
 
@@ -243,5 +246,7 @@ class Core(Component):
         retirement.checkpoint_tag_free.provide(crat.free_tag)
 
         m.submodules.func_blocks_unifier = self.func_blocks_unifier
+
+        m.submodules.debug_module = self.debug_module
 
         return m
