@@ -6,6 +6,7 @@ from coreblocks.arch.csr_address import (
     MenvcfgFieldOffsets,
     MstatusFieldOffsets,
     sstatus_field_subset,
+    DCRCFieldOffsets,
     PMPXCFG_WIDTH,
 )
 from coreblocks.arch.isa import Extension
@@ -232,6 +233,26 @@ class MachineModeCSRRegisters(Elaboratable):
             event = CSRRegister(CSRAddress[f"MHPMEVENT{i}"], gen_params, ro_bits=0 if is_implemented else ~0)
             setattr(self, f"mhpmevent{i}", event)
             setattr(self, f"mhpmcounter{i}", counter)
+
+        self.dcsr = AliasedCSR(CSRAddress.DCSR, gen_params)
+        self.dcsr_prv = CSRRegister(None, gen_params, width=3)
+        self.dcsr.add_field(DCRCFieldOffsets.PRV, self.dcsr_prv)
+        self.dcsr_step = CSRRegister(None, gen_params, width=1)
+        self.dcsr.add_field(DCRCFieldOffsets.STEP, self.dcsr_step)
+        self.dcsr_nmip = CSRRegister(None, gen_params, width=1, ro_bits=1)
+        self.dcsr.add_field(DCRCFieldOffsets.STEP, self.dcsr_nmip)
+        # mprven 0 or 1
+        # v 0
+        self.dcsr_cause = CSRRegister(None, gen_params, width=3, ro_bits=0b111)
+        self.dcsr.add_field(DCRCFieldOffsets.CAUSE, self.dcsr_cause)
+        # stoptime 0 or 1
+        # stopcount 0 or 1
+        self.dcsr_debugver = CSRRegister(None, gen_params, width=4, ro_bits=0b1111, init=4) # TODO don't like creating a whole register like this
+        self.dcsr.add_field(DCRCFieldOffsets.DEBUGVER, self.dcsr_debugver)
+
+
+
+        self.dpc = CSRRegister(CSRAddress.DPC, gen_params)
 
     def elaborate(self, platform):
         m = TModule()

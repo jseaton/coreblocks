@@ -33,6 +33,7 @@ from coreblocks.peripherals.wishbone import WishboneMaster, WishboneInterface
 from coreblocks.priv.vmem.tlb import FullyAssociativeTLB, SetAssociativeTLB
 from coreblocks.priv.vmem.walker import PageTableWalker
 from coreblocks.debug.debug_module import DebugModule
+from coreblocks.debug.debug_jtag import DebugJTAGTAP, JTAGDebugInterface
 from transactron.lib.metrics import HwMetricsEnabledKey, TaggedCounter
 from transactron.evlog import EvLogEnabledKey
 
@@ -43,6 +44,7 @@ class Core(Component):
     wb_instr: WishboneInterface
     wb_data: WishboneInterface
     interrupts: Signal
+    debug: JTAGDebugInterface
 
     def __init__(self, *, gen_params: GenParams):
         super().__init__(
@@ -50,6 +52,7 @@ class Core(Component):
                 "wb_instr": Out(WishboneInterface(gen_params.wb_params).signature),
                 "wb_data": Out(WishboneInterface(gen_params.wb_params).signature),
                 "interrupts": In(ISA_RESERVED_INTERRUPTS + gen_params.interrupt_custom_count),
+                "debug": Out(JTAGDebugInterface().signature)
             }
         )
 
@@ -148,6 +151,8 @@ class Core(Component):
         )
 
         self.debug_module = DebugModule(self.gen_params)
+        self.debug_jtag = DebugJTAGTAP(self.gen_params)
+
 
     def elaborate(self, platform):
         m = TModule()
@@ -156,6 +161,8 @@ class Core(Component):
 
         connect(m.top_module, flipped(self.wb_instr), self.wb_master_instr.wb_master)
         connect(m.top_module, flipped(self.wb_data), self.wb_master_data.wb_master)
+
+        connect(m.top_module, flipped(self.debug), self.debug_jtag.jtag) # TODO flipped???
 
         m.submodules.wb_master_instr = self.wb_master_instr
         m.submodules.wb_master_data = self.wb_master_data
@@ -248,5 +255,6 @@ class Core(Component):
         m.submodules.func_blocks_unifier = self.func_blocks_unifier
 
         m.submodules.debug_module = self.debug_module
+        m.submodules.debug_jtag = self.debug_jtag
 
         return m

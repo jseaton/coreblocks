@@ -586,3 +586,37 @@ senvcfg_field_subset: Set[MenvcfgFieldOffsets] = frozenset(
         MenvcfgFieldOffsets.CBZE,
     }
 )
+
+@unique
+class DCRCFieldOffsets(IntEnum):
+    PRV = 0
+    STEP = 2
+    NMIP = 3
+    MPRVEN = 4
+    V = 5
+    CAUSE = 6
+    STOPTIME = 9
+    STOPCOUNT = 10
+    STEPIE = 11
+    EBREAKU = 12
+    EBREAKS = 13
+    EBREAKM = 15
+    EBREAKVU = 16
+    EBREAKVS = 17
+    PELP = 18
+    CETRIG = 19
+    EXTCAUSE = 24
+    DEBUGVER = 28
+
+    def field_length(self) -> int:
+        if self == DCRCFieldOffsets.DEBUGVER:
+            return 4
+        if self in [
+                DCRCFieldOffsets.CAUSE,
+                DCRCFieldOffsets.EXTCAUSE,
+        ]:
+            return 3
+        if self == DCRCFieldOffsets.PRV:
+            return 2
+
+        return 1
