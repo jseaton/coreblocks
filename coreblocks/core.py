@@ -257,6 +257,11 @@ class Core(Component):
         m.submodules.debug_module = self.debug_module
         m.submodules.debug_jtag = self.debug_jtag
 
+        # TODO make more like rest...
+        self.debug_module.halt.provide(self.frontend.stall_ctrl.stall_exception)
+        self.debug_module.rf_read_req.provide(rf.read_req)
+        self.debug_module.rf_read_resp.provide(rf.read_resp)
+
         connect(m.top_module, flipped(self.debug_jtag.dmi), self.debug_module.dmi)
 
         return m
