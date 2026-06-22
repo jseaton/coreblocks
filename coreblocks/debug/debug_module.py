@@ -6,12 +6,11 @@ from amaranth.lib.enum import Enum, auto
 from coreblocks.params.genparams import GenParams
 from coreblocks.interface.layouts import *
 
-from transactron.utils import DependencyContext
 from transactron.core import Transaction, TModule
 from transactron.utils.amaranth_ext.component_interface import ComponentInterface, CIn, COut
 from transactron import *
 
-from coreblocks.interface.keys import CSRInstancesKey
+from coreblocks.peripherals.bus_adapter import BusMasterInterface
 
 class CoreState(Enum):
     NONEXISTENT = auto()
@@ -37,18 +36,17 @@ class DebugModuleInterface(ComponentInterface):
 
 class DebugModule(Component):
     dmi: DebugModuleInterface
+    bus: BusMasterInterface
 
     halt: Required[Method]
-    """ Stop the core for debug mode or something idk """
 
     rf_read_req: Required[Methods]
-
     rf_read_resp: Required[Methods]
 
-    def __init__(self, gen_params: GenParams):
+    def __init__(self, gen_params: GenParams, bus: BusMasterInterface):
         super().__init__({"dmi": Out(DebugModuleInterface().signature)})
 
-        self.dm = DependencyContext.get()
+        self.bus = bus
 
         self.dmactive = Signal()
         self.ndmreset = Signal()
@@ -62,6 +60,7 @@ class DebugModule(Component):
         self.abstract_control = Signal(24)
 
         self.abstract_busy = Signal()
+        self.abstract_cmderr = Signal(3)
 
         self.abstract_data = Signal(32) # yes, just the one hopefully
 
@@ -134,6 +133,17 @@ class DebugModule(Component):
             "cmdtype" : 8,
         })
 
+        self.access_memory_layout = StructLayout({
+            "0_0": 14,
+            "target-specific": 2,
+            "write": 1,
+            "0_1": 2,
+            "aampostincrement" : 1,
+            "aamsize" : 3,
+            "aamvirtual": 1,
+            "cmdtype" : 8,
+        })
+
         self.halt = Method()
 
         self.rf_read_req = Methods(2 * gen_params.frontend_superscalarity, i=gen_params.get(RFLayouts).rf_read_in)
@@ -178,6 +188,7 @@ class DebugModule(Component):
                 resp = Signal(self.abstractcs_layout)
                 m.d.av_comb += [
                         resp.datacount.eq(1),
+                        resp.cmderr.eq(self.abstract_cmderr),
                         resp.busy.eq(self.abstract_busy),
                         resp.progbufsize.eq(16)
                         ]
@@ -293,8 +304,6 @@ class DebugModule(Component):
                 m.next = "REQ_READY"
                 m.d.sync += self.dmi.rsp_valid.eq(0)
 
-        csr = self.dm.get_dependency(CSRInstancesKey())
-
         with m.If(self.abstract_busy):
             with m.Switch(self.abstract_type):
                 with m.Case(0): # Access Register
@@ -313,23 +322,39 @@ class DebugModule(Component):
                                     reg_value = self.rf_read_resp[0](m, arreq.regno - 0x1000)
                                     m.d.sync += [
                                             self.abstract_data.eq(reg_value.reg_val),
-                                            self.abstract_busy.eq(0)
+                                            self.abstract_busy.eq(0),
+                                            self.abstract_cmderr.eq(0)
                                             ]
                                     m.next = "Submit"
                     with m.Else():
-                        with m.If(arreq.regno == 0x301):
-                                with Transaction().body(m):
-                                    reg_value = csr.m_mode.misa.read(m)
-                                    m.d.sync += [
-                                            self.abstract_data.eq(reg_value.data),
-                                            self.abstract_busy.eq(0)
-                                            ]
+                            m.d.sync += [
+                                    self.abstract_data.eq(0),
+                                    self.abstract_cmderr.eq(2),
+                                    self.abstract_busy.eq(0)
+                                    ]
 
                 with m.Case(1): # Quick Access
                     with Transaction().body(m):
                         self.halt(m)
                         m.d.sync += self.core_state.eq(CoreState.HALTED)
                         self.abstract_busy.eq(0)
+
+                with m.Case(2): # Access Memory
+                    with m.FSM():
+                        with m.State("Submit"):
+                            with Transaction().body(m):
+                                self.bus.request_read(m, addr=0, sel=0)
+                                m.next = "Read"
+                        with m.State("Read"):
+                            with Transaction().body(m):
+                                fetched = self.bus.get_write_response(m)
+                                m.d.sync += [
+                                        self.abstract_data.eq(fetched),
+                                        self.abstract_busy.eq(0),
+                                        self.abstract_cmderr.eq(0)
+                                        ]
+                                m.next = "Submit"
+
 
 
         # m.d.sync.reset += self.ndmreset lol how does reset work in coreblocks
