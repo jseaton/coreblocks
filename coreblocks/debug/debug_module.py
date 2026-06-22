@@ -1,6 +1,7 @@
 from amaranth import *
 from amaranth.lib.data import StructLayout
 from amaranth.lib.wiring import Component, In, Out
+from amaranth.lib.enum import Enum, auto
 
 from coreblocks.params.genparams import GenParams
 from coreblocks.interface.layouts import *
@@ -10,6 +11,12 @@ from transactron.utils.transactron_helpers import make_layout
 from transactron.lib.simultaneous import condition
 from transactron.utils.amaranth_ext.component_interface import ComponentInterface, CIn, COut
 from transactron import *
+
+class CoreState(Enum):
+    NONEXISTENT = auto()
+    UNAVAIL = auto()
+    HALTED = auto()
+    RUNNING = auto()
 
 ABITS = 16 # TODO make smaller...
 
@@ -36,8 +43,15 @@ class DebugModule(Component):
         self.dmactive = Signal()
         self.ndmreset = Signal()
 
+        self.core_state = Signal(CoreState, init=CoreState.RUNNING)
+
+        self.hartsel = Signal(1)
+
+
         self.abstract_type = Signal(8)
         self.abstract_control = Signal(24)
+
+        self.abstract_processing = Signal()
 
         self.progbuf = Array([Signal(32)]*16)
 
@@ -68,6 +82,7 @@ class DebugModule(Component):
             "allhalted" : 1,
             "anyrunning" : 1,
             "allrunning" : 1,
+            "anyunavail" : 1,
             "allunavail" : 1,
             "anynonexistent" : 1,
             "allnonexistent" : 1,
@@ -93,7 +108,9 @@ class DebugModule(Component):
                 resp = Signal(self.dmcontrol_layout)
                 m.d.av_comb += [
                         resp.dmactive.eq(self.dmactive),
-                        resp.ndmreset.eq(self.ndmreset)
+                        resp.ndmreset.eq(self.ndmreset),
+                        resp.hartsello.eq(self.hartsel[:10]),
+                        resp.hartselhi.eq(self.hartsel[10:])
                         ]
                 m.d.sync += rsp_data.eq(resp)
             with m.Case(0x11): # dmstatus
@@ -101,7 +118,15 @@ class DebugModule(Component):
                 resp = Signal(self.dmstatus_layout)
                 m.d.av_comb += [
                         resp.version.eq(3),
-                        resp.authenticated.eq(1)
+                        resp.authenticated.eq(1),
+                        resp.anyhalted.eq((self.hartsel == 0).bool() & (self.core_state == CoreState.HALTED).bool()), # NOTE this code is only correct for single core!
+                        resp.allhalted.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.HALTED).bool()),
+                        resp.anyrunning.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.RUNNING).bool()),
+                        resp.allrunning.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.RUNNING).bool()),
+                        resp.anyunavail.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.UNAVAIL).bool()),
+                        resp.allunavail.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.UNAVAIL).bool()),
+                        resp.anynonexistent.eq(self.hartsel != 0),
+                        resp.allnonexistent.eq(self.hartsel != 0),
                         ]
                 m.d.sync += rsp_data.eq(resp)
             with m.Default():
@@ -118,18 +143,24 @@ class DebugModule(Component):
                         ]
                 m.d.sync += [
                         self.dmactive.eq(req.dmactive),
-                        self.ndmreset.eq(req.ndmreset)
+                        self.ndmreset.eq(req.ndmreset),
+                        self.hartsel.eq(Cat(req.hartsello, req.hartselhi))
                         ]
+                with m.If(req.haltreq):
+                    m.d.sync += self.core_state.eq(CoreState.HALTED) # TODO for real
             with m.Case(0x11): # dmstatus
                 m.d.av_comb += rsp_op.eq(2)
             with m.Case(0x17): # command
-                m.d.av_comb += rsp_op.eq(0) # TODO busy
-                req = Signal(self.command_layout)
-                m.d.av_comb += [
-                        req.eq(data),
-                        self.abstract_control.eq(req.control),
-                        self.abstract_type.eq(req.cmdtype)
-                        ]
+                with m.If(self.abstract_processing):
+                    m.d.av_comb += rsp_op.eq(2)
+                with m.Else():
+                    m.d.av_comb += rsp_op.eq(0)
+                    req = Signal(self.command_layout)
+                    m.d.av_comb += [
+                            req.eq(data),
+                            self.abstract_control.eq(req.control),
+                            self.abstract_type.eq(req.cmdtype)
+                            ]
             with m.Case(*range(0x20,0x30)): #progbuf
                 m.d.av_comb += rsp_op.eq(0) # TODO busy stuff
                 m.d.av_comb += self.progbuf[address - 0x20].eq(data)
@@ -174,7 +205,7 @@ class DebugModule(Component):
                 with m.Elif(self.dmi.req_op == 2):
                     m.next = "RESP_WAITING"
                     m.d.sync += rsp_data.eq(0)
-                    with m.If(self.dmactive | address == 0x10):
+                    with m.If(self.dmactive.bool() | ((address == 0x10).bool() & (data == 1).bool())):
                         self.write(m, address, data, rsp_op)
 
             with m.State("RESP_WAITING"):
@@ -192,6 +223,12 @@ class DebugModule(Component):
             with m.State("RESP_POST"):
                 m.next = "REQ_READY"
                 m.d.sync += self.dmi.rsp_valid.eq(0)
+
+        with m.If(self.abstract_processing):
+            with m.Switch(self.abstract_type):
+                with m.Case(1): # Quick Access
+                    m.d.sync += self.core_state.eq(CoreState.HALTED)
+
 
         # m.d.sync.reset += self.ndmreset lol how does reset work in coreblocks
 
