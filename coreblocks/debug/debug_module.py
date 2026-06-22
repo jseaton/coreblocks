@@ -8,22 +8,30 @@ from coreblocks.interface.layouts import *
 from transactron.core import Transaction, TModule
 from transactron.utils.transactron_helpers import make_layout
 from transactron.lib.simultaneous import condition
+from transactron.utils.amaranth_ext.component_interface import ComponentInterface, CIn, COut
 from transactron import *
 
+ABITS = 16 # TODO make smaller...
+
+# Suggested DMI from A.3 of debug spec, used by rocket
+class DebugModuleInterface(ComponentInterface):
+    def __init__(self):
+        self.req_ready = COut(1)
+        self.req_valid = CIn(1)
+        self.req_op = CIn(2)
+        self.req_address = CIn(ABITS)
+        self.req_data = CIn(32)
+
+        self.rsp_ready = CIn(1)
+        self.rsp_valid = COut(1)
+        self.rsp_op = COut(2)
+        self.rsp_data = COut(32)
 
 class DebugModule(Component):
-    req_ready: Out(1)
-    req_valid: In(1)
-    req_op: In(2)
-    req_address: In(32) # TODO abits
-    req_data: In(32) # TODO nope this is fine??
-
-    rsp_ready: Out(1)
-    rsp_op: Out(2)
-    rsp_data: Out(32)
+    dmi: DebugModuleInterface
 
     def __init__(self, gen_params: GenParams):
-        super().__init__()
+        super().__init__({"dmi": Out(DebugModuleInterface().signature)})
 
         self.dmactive = Signal()
         self.ndmreset = Signal()
@@ -53,7 +61,7 @@ class DebugModule(Component):
         self.dmstatus_layout = StructLayout({
             "version": 4,
             "confstrptrvalid": 1,
-            "hasresethaltreq":  2,
+            "hasresethaltreq":  1,
             "authbusy": 1,
             "authenticated" : 1,
             "anyhalted" : 1,
@@ -87,17 +95,18 @@ class DebugModule(Component):
                         resp.dmactive.eq(self.dmactive),
                         resp.ndmreset.eq(self.ndmreset)
                         ]
-                m.d.av_comb += rsp_data.eq(resp)
+                m.d.sync += rsp_data.eq(resp)
             with m.Case(0x11): # dmstatus
                 m.d.av_comb += rsp_op.eq(0)
                 resp = Signal(self.dmstatus_layout)
                 m.d.av_comb += [
                         resp.version.eq(3),
+                        resp.authenticated.eq(1)
                         ]
-                m.d.av_comb += rsp_data.eq(resp)
+                m.d.sync += rsp_data.eq(resp)
             with m.Default():
                 m.d.av_comb += rsp_op.eq(0)
-                m.d.av_comb += rsp_data.eq(0)
+                m.d.sync += rsp_data.eq(0)
 
     def write(self, m, address, data, rsp_op):
         with m.Switch(address):
@@ -142,47 +151,47 @@ class DebugModule(Component):
         with m.FSM():
             with m.State("REQ_READY"):
                 m.next = "REQ_WAITING"
-                m.d.sync += self.req_ready.eq(1)
+                m.d.sync += self.dmi.req_ready.eq(1)
 
             with m.State("REQ_WAITING"):
-                with m.If(self.req_valid):
+                with m.If(self.dmi.req_valid):
                     m.next = "REQ_PROCESSING"
                     m.d.sync += [
-                            address.eq(self.req_address),
-                            data.eq(self.req_data),
-                            op.eq(self.req_op)
+                            address.eq(self.dmi.req_address),
+                            data.eq(self.dmi.req_data),
+                            op.eq(self.dmi.req_op)
                             ]
 
             with m.State("REQ_PROCESSING"):
-                m.d.sync += self.req_ready.eq(0)
-                with m.If(self.req_op == 0): # NOP
+                m.d.sync += self.dmi.req_ready.eq(0)
+                with m.If(self.dmi.req_op == 0): # NOP
                     m.next = "RESP_WAITING"
                     m.d.av_comb += rsp_op.eq(0)
-                    m.d.av_comb += rsp_data.eq(0)
-                with m.Elif(self.req_op == 1):
+                    m.d.sync += rsp_data.eq(0)
+                with m.Elif(self.dmi.req_op == 1):
                     m.next = "RESP_WAITING"
                     self.read(m, address, rsp_op, rsp_data)
-                with m.Elif(self.req_op == 2):
+                with m.Elif(self.dmi.req_op == 2):
                     m.next = "RESP_WAITING"
-                    m.d.av_comb += rsp_data.eq(0)
-                    with m.If(self.dmactive):
+                    m.d.sync += rsp_data.eq(0)
+                    with m.If(self.dmactive | address == 0x10):
                         self.write(m, address, data, rsp_op)
 
             with m.State("RESP_WAITING"):
-                with m.If(self.rsp_ready):
+                with m.If(self.dmi.rsp_ready):
                     m.next = "RESP"
 
             with m.State("RESP"):
-                with m.If(~self.rsp_ready):
+                with m.If(~self.dmi.rsp_ready):
                     m.next = "RESP_POST"
                 m.d.sync += [
-                        self.rsp_ready.eq(1),
-                        self.rsp_data.eq(rsp_data),
-                        self.rsp_op.eq(rsp_op)
+                        self.dmi.rsp_valid.eq(1),
+                        self.dmi.rsp_data.eq(rsp_data),
+                        self.dmi.rsp_op.eq(rsp_op)
                         ]
             with m.State("RESP_POST"):
                 m.next = "REQ_READY"
-                m.d.sync += self.rsp_ready.eq(0)
+                m.d.sync += self.dmi.rsp_valid.eq(0)
 
         # m.d.sync.reset += self.ndmreset lol how does reset work in coreblocks
 

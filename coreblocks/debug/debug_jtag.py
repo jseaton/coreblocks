@@ -11,19 +11,24 @@ from transactron.lib.simultaneous import condition
 from transactron.utils.amaranth_ext.component_interface import ComponentInterface, CIn, COut
 from transactron import *
 
+from coreblocks.debug.debug_module import DebugModuleInterface, ABITS
+
 
 class JTAGDebugInterface(ComponentInterface):
     def __init__(self):
-        self.tck = CIn() # TODO magic clock?
+        self.tck = CIn()
         self.tms = CIn()
         self.tdi = CIn()
         self.tdo = COut()
 
 class DebugJTAGTAP(Component):
     jtag: JTAGDebugInterface
+    dmi: DebugModuleInterface
 
     def __init__(self, gen_params: GenParams):
-        super().__init__({"jtag": Out(JTAGDebugInterface().signature)})
+        super().__init__({
+            "jtag": Out(JTAGDebugInterface().signature),
+            "dmi": Out(DebugModuleInterface().signature)})
 
     def elaborate(self, platform):
         m = TModule()
@@ -39,29 +44,43 @@ class DebugJTAGTAP(Component):
             "errinfo" : 3
         })
 
+        dmi_layout = StructLayout({
+            "op" : 2,
+            "data" : 32,
+            "address" : 32
+        })
+
         m.domains.jtag_pos = cd_jtag_pos = ClockDomain()
         m.domains.jtag_neg = cd_jtag_neg = ClockDomain()
         m.d.comb += cd_jtag_pos.clk.eq(self.jtag.tck)
         m.d.comb += cd_jtag_neg.clk.eq(~self.jtag.tck)
 
         ir = Signal(5)
-        dr = Signal(33+32)
+        dr = Signal(33+ABITS)
 
         read = Signal()
         write = Signal()
 
         dtmcs = Signal(32)
-        dmi = Signal(32)
 
-        dmi_op = Signal(2)
+        req_dmi_op = Signal(2)
+        req_dmi_data = Signal(32)
+        req_dmi_address = Signal(32)
 
-        wtf = Signal(3)
+        rsp_dmi_op = Signal(2)
+        rsp_dmi_data = Signal(32)
+
+        dmi_submit = Signal()
+
+        wtf = Signal(4)
+
+        reset_fsm = Signal()
 
         width = {
-                0x0 : 1, 0x12 : 1, 0x13 : 1, 0x14 : 1, 0x15 : 1, 0x15 : 1, 0x17 : 1, 0x1f : 1,
+                0x0 : 1, 0x12 : 1, 0x13 : 1, 0x14 : 1, 0x15 : 1, 0x17 : 1, 0x1f : 1,
                 0x1 : 32,
                 0x10 : 32,
-                0x11 : 33+32
+                0x11 : 33+ABITS
                 }
 
         with m.FSM(domain="jtag_pos"):
@@ -72,11 +91,13 @@ class DebugJTAGTAP(Component):
                 m.d.jtag_pos += ir.eq(1)
             with m.State("Idle"): # 1
                 m.d.comb += wtf.eq(1)
+                m.d.sync += dmi_submit.eq(0)
                 with m.If(self.jtag.tms):
                     m.next = "Select-DR-Scan"
 
             with m.State("Select-DR-Scan"): # 2
                 m.d.comb += wtf.eq(2)
+                m.d.sync += dmi_submit.eq(0)
                 with m.If(self.jtag.tms):
                     m.next = "Select-IR-Scan"
                 with m.Else():
@@ -117,8 +138,10 @@ class DebugJTAGTAP(Component):
                     m.next = "Shift-DR"
             with m.State("Update-DR"): # 8
                 m.d.comb += wtf.eq(8)
-                # TODO write
-                with m.If(self.jtag.tms):
+                m.d.comb += write.eq(1)
+                with m.If(reset_fsm):
+                    m.next = "Test-Logic-Reset"
+                with m.Elif(self.jtag.tms):
                     m.next = "Select-DR-Scan"
                 with m.Else():
                     m.next = "Idle"
@@ -166,8 +189,9 @@ class DebugJTAGTAP(Component):
                 with m.Else():
                     m.next = "Idle"
 
+        # TODO clock domain crossing...
         with m.If(read), m.Switch(ir):
-            with m.Case(0x0, 0x12, 0x13, 0x14, 0x15, 0x15, 0x17, 0x1f): # bypass
+            with m.Case(0x0, 0x12, 0x13, 0x14, 0x15, 0x17, 0x1f): # bypass
                 m.d.jtag_pos += dr.eq(0)
             with m.Case(0x1): # idcode
                 m.d.jtag_pos += dr.eq(0x10003FFF)
@@ -175,124 +199,71 @@ class DebugJTAGTAP(Component):
                 resp = Signal(dtmcs_layout) # TODO use View
                 m.d.comb += [
                         resp.version.eq(1),
-                        resp.abits.eq(32),
-                        resp.dmistat.eq(dmi_op),
-                        resp.idle.eq(10)
+                        resp.abits.eq(ABITS),
+                        resp.dmistat.eq(rsp_dmi_op),
+                        resp.idle.eq(100)
                         ]
                 m.d.jtag_pos += dr.eq(resp)
             with m.Case(0x11): # dmi
-                m.d.jtag_pos += dr.eq(dmi)
+                resp = Signal(dmi_layout) # TODO use View
+                m.d.comb += [
+                        resp.op.eq(rsp_dmi_op),
+                        resp.data.eq(rsp_dmi_data),
+                        ]
+                m.d.jtag_pos += dr.eq(resp)
 
         with m.If(write), m.Switch(ir):
-            with m.Case(0x0, 0x1, 0x12, 0x13, 0x14, 0x15, 0x15, 0x17, 0x1f): # bypass, idcode
-                pass # m.d.jtag_neg += rsp_op.eq(2) TODO error?
+            with m.Case(0x0, 0x1, 0x12, 0x13, 0x14, 0x15, 0x17, 0x1f): # bypass, idcode
+                pass
             with m.Case(0x10): # dtmcs
                 req = Signal(dtmcs_layout) # TODO use View
-                m.d.jtag_neg += req.eq(dr)
-                with m.If(req.dmireset): # TODO
-                    pass
+                m.d.comb += req.eq(dr)
+                with m.If(req.dmireset): # TODO reset fsm...
+                    m.d.jtag_pos += [
+                            dr.eq(0),
+                            ir.eq(1)
+                            ]
+                    m.d.comb += reset_fsm.eq(1)
                 with m.If(req.dtmhardreset): # TODO
                     pass
-            with m.Case(0x11): # dtmcs
-                m.d.jtag_neg += dmi.eq(dr)
+            with m.Case(0x11): # dmi
+                req = Signal(dmi_layout) # TODO use View
+                m.d.comb += req.eq(dr)
+                m.d.sync += [
+                        req_dmi_op.eq(req.op),
+                        req_dmi_data.eq(req.data),
+                        req_dmi_address.eq(req.address),
+                        dmi_submit.eq(1)
+                        ]
 
-#        address = Signal(32) # TODO size
-#        data = Signal(32)
-#        op = Signal(2)
-#
-#        rsp_data = Signal(32)
-#        rsp_op = Signal(2)
-#
-#        dtmcs = Signal(32)
-#        dmi = Signal(32)
-#
-#        dmi_op = Signal(2)
-#
-#        dtmcs_layout = StructLayout({
-#            "version":   4,
-#            "abits": 6,
-#            "dmistat":  2,
-#            "idle": 3,
-#            "0" : 1,
-#            "dmireset" : 1,
-#            "dtmhardreset" : 1,
-#            "errinfo" : 3
-#        })
-#
-#        # TODO this probably has more wait states than necessary, but I'd rather get it right first!
-#        with m.FSM():
-#            with m.State("REQ_READY"):
-#                m.next = "REQ_WAITING"
-#                m.d.sync += self.req_ready.eq(1)
-#
-#            with m.State("REQ_WAITING"):
-#                with m.If(self.req_valid):
-#                    m.next = "REQ_PROCESSING"
-#                    m.d.sync += [
-#                            address.eq(self.req_address),
-#                            data.eq(self.req_data),
-#                            op.eq(self.req_op)
-#                            ]
-#            # TODO yeah we really don't need this state...
-#            with m.State("REQ_PROCESSING"):
-#                m.d.sync += self.req_ready.eq(0)
-#                with m.If(self.req_op == 0): # NOP
-#                    m.next = "RESP_WAITING"
-#                    m.d.av_comb += rsp_op.eq(0)
-#                    m.d.av_comb += rsp_data.eq(0)
-#                with m.Elif(self.req_op == 1):
-#                    m.next = "RESP_WAITING"
-#                    with m.Switch(address): # TODO introduce IR
-#                        with m.Case(0x0, 0x12, 0x13, 0x14, 0x15, 0x15, 0x17, 0x1f): # bypass
-#                            m.d.av_comb += rsp_op.eq(0)
-#                            m.d.av_comb += rsp_data.eq(0)
-#                        with m.Case(0x1): # idcode
-#                            m.d.av_comb += rsp_op.eq(0)
-#                            m.d.av_comb += rsp_data.eq(0x12345)
-#                        with m.Case(0x10): # dtmcs
-#                            m.d.av_comb += rsp_op.eq(0)
-#                            resp = Signal(dtmcs_layout)
-#                            m.d.av_comb += [
-#                                    resp.version.eq(1),
-#                                    resp.abits.eq(32),
-#                                    resp.dmistat.eq(dmi_op),
-#                                    resp.idle.eq(10)
-#                                    ]
-#                            m.d.av_comb += rsp_data.eq(resp)
-#                        with m.Case(0x11): # dtmcs
-#                            m.d.av_comb += rsp_op.eq(0)
-#                            m.d.av_comb += rsp_data.eq(dmi)
-#                with m.Elif(self.req_op == 2):
-#                    m.next = "RESP_WAITING"
-#                    with m.Switch(address):
-#                        with m.Case(0x0, 0x1, 0x12, 0x13, 0x14, 0x15, 0x15, 0x17, 0x1f): # bypass, idcode
-#                            m.d.av_comb += rsp_op.eq(2)
-#                        with m.Case(0x10): # dtmcs
-#                            m.d.av_comb += rsp_op.eq(0)
-#                            req = Signal(dtmcs_layout)
-#                            m.d.av_comb += req.eq(data)
-#                            with m.If(req.dmireset): # TODO
-#                                pass
-#                            with m.If(req.dtmhardreset): # TODO
-#                                pass
-#                        with m.Case(0x11): # dtmcs
-#                            m.d.av_comb += rsp_op.eq(0)
-#                            m.d.av_comb += rsp_data.eq(dmi)
-#
-#            with m.State("RESP_WAITING"):
-#                with m.If(self.rsp_ready):
-#                    m.next = "RESP"
-#
-#            with m.State("RESP"):
-#                with m.If(~self.rsp_ready):
-#                    m.next = "RESP_POST"
-#                m.d.sync += [
-#                        self.rsp_ready.eq(1),
-#                        self.rsp_data.eq(rsp_data),
-#                        self.rsp_op.eq(rsp_op)
-#                        ]
-#            with m.State("RESP_POST"):
-#                m.next = "REQ_READY"
-#                m.d.sync += self.rsp_ready.eq(0)
+        # dmi
+        with m.FSM():
+            with m.State("Idle"):
+                with m.If(dmi_submit & self.dmi.req_ready):
+                    m.next = "Wait"
+
+                    m.d.sync += [
+                            self.dmi.req_op.eq(req_dmi_op),
+                            self.dmi.req_data.eq(req_dmi_data),
+                            self.dmi.req_address.eq(req_dmi_address),
+                            self.dmi.req_valid.eq(1),
+                            self.dmi.rsp_ready.eq(1)
+                            ]
+
+            with m.State("Wait"):
+                m.d.sync += self.dmi.req_valid.eq(0)
+
+                with m.If(self.dmi.rsp_valid):
+                    m.next = "Wait-Submit-Done"
+
+                    m.d.sync += [
+                            rsp_dmi_op.eq(self.dmi.rsp_op),
+                            rsp_dmi_data.eq(self.dmi.rsp_data),
+                            self.dmi.rsp_ready.eq(0)
+                            ]
+
+            with m.State("Wait-Submit-Done"):
+                with m.If(~dmi_submit):
+                    m.next = "Idle"
 
         return m

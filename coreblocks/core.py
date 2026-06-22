@@ -162,7 +162,7 @@ class Core(Component):
         connect(m.top_module, flipped(self.wb_instr), self.wb_master_instr.wb_master)
         connect(m.top_module, flipped(self.wb_data), self.wb_master_data.wb_master)
 
-        connect(m.top_module, flipped(self.debug), self.debug_jtag.jtag) # TODO flipped???
+        connect(m.top_module, flipped(self.debug), self.debug_jtag.jtag)
 
         m.submodules.wb_master_instr = self.wb_master_instr
         m.submodules.wb_master_data = self.wb_master_data
@@ -256,5 +256,7 @@ class Core(Component):
 
         m.submodules.debug_module = self.debug_module
         m.submodules.debug_jtag = self.debug_jtag
+
+        connect(m.top_module, flipped(self.debug_jtag.dmi), self.debug_module.dmi)
 
         return m
