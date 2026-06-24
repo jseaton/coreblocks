@@ -90,6 +90,9 @@ class CoreFrontend(Elaboratable):
     stall: Provided[Method]
     """Stall and flush the frontend."""
 
+    stall_debug: Provided[Method]
+    """Stall and flush the frontend."""
+
     def __init__(self, *, gen_params: GenParams, instr_bus: BusMasterInterface):
         self.gen_params = gen_params
         self.connections = DependencyContext.get()
@@ -121,6 +124,7 @@ class CoreFrontend(Elaboratable):
         self.consume_instr = Method(o=self.gen_params.get(SchedulerLayouts).scheduler_in)
         self.resume_from_exception = self.stall_ctrl.resume_from_exception
         self.stall = Method()
+        self.stall_debug = Method()
 
         self.rollback_tagger = RollbackTagger(self.gen_params)
 
@@ -168,5 +172,13 @@ class CoreFrontend(Elaboratable):
             self.output_pipe.clear(m)
             self.bpu.flush(m)
             self.stall_ctrl.stall_exception(m)
+
+        @def_method(m, self.stall_debug)
+        def _():
+            self.fetch.flush(m)
+            self.instr_buffer.clear(m)
+            self.output_pipe.clear(m)
+            self.bpu.flush(m)
+            self.stall_ctrl.stall_debug(m)
 
         return m

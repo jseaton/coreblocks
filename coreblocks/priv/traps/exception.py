@@ -50,7 +50,7 @@ class ExceptionInformationRegister(Elaboratable):
     If `exception` bit is set in the ROB, `Retirement` stage fetches exception details from this module.
     """
 
-    def __init__(self, gen_params: GenParams, rob_get_indices: Method, fetch_stall_exception: Method):
+    def __init__(self, gen_params: GenParams, rob_get_indices: Method, fetch_stall_exception: Method, fetch_stall_debug: Method):
         self.gen_params = gen_params
 
         self.cause = Signal(ExceptionCause)
@@ -90,6 +90,7 @@ class ExceptionInformationRegister(Elaboratable):
 
         self.rob_get_indices = rob_get_indices
         self.fetch_stall_exception = fetch_stall_exception
+        self.fetch_stall_debug = fetch_stall_debug
 
     def elaborate(self, platform):
         m = TModule()
@@ -118,8 +119,12 @@ class ExceptionInformationRegister(Elaboratable):
 
             m.d.sync += self.valid.eq(1)
 
-            # In case of any reported exception, core will need to be flushed. Fetch can be stalled immediately
-            self.fetch_stall_exception(m)
+            with m.If(cause == ExceptionCause.BREAKPOINT):
+                self.fetch_stall_debug(m)
+            with m.Else():
+                # In case of any reported exception, core will need to be flushed. Fetch can be stalled immediately
+                self.fetch_stall_exception(m)
+
 
         @def_method(m, self.get, nonexclusive=True)
         def _():

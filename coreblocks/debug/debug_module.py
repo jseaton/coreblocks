@@ -6,11 +6,16 @@ from amaranth.lib.enum import Enum, auto
 from coreblocks.params.genparams import GenParams
 from coreblocks.interface.layouts import *
 
+from transactron.utils import DependencyContext
 from transactron.core import Transaction, TModule
 from transactron.utils.amaranth_ext.component_interface import ComponentInterface, CIn, COut
 from transactron import *
 
 from coreblocks.peripherals.bus_adapter import BusMasterInterface
+from coreblocks.interface.keys import (
+    CommonBusDataKey,
+    FlushICacheKey
+)
 
 class CoreState(Enum):
     NONEXISTENT = auto()
@@ -39,14 +44,18 @@ class DebugModule(Component):
     bus: BusMasterInterface
 
     halt: Required[Method]
+    exec: Required[Method]
 
     rf_read_req: Required[Methods]
     rf_read_resp: Required[Methods]
 
-    def __init__(self, gen_params: GenParams, bus: BusMasterInterface):
+    def __init__(self, gen_params: GenParams):
         super().__init__({"dmi": Out(DebugModuleInterface().signature)})
 
-        self.bus = bus
+        self.gen_params = gen_params
+
+        dm = DependencyContext.get()
+        self.bus = dm.get_dependency(CommonBusDataKey())
 
         self.dmactive = Signal()
         self.ndmreset = Signal()
@@ -62,10 +71,9 @@ class DebugModule(Component):
         self.abstract_busy = Signal()
         self.abstract_cmderr = Signal(3)
 
-        self.abstract_data = Signal(32) # yes, just the one hopefully
+        self.abstract_data = Array([Signal(32)]*2) # yes, just the two hopefully
 
-        self.progbuf = Array([Signal(32)]*16)
-
+        # TODO move layouts
         self.dmcontrol_layout = StructLayout({
             "dmactive": 1,
             "ndmreset": 1,
@@ -144,8 +152,13 @@ class DebugModule(Component):
             "cmdtype" : 8,
         })
 
-        self.halt = Method()
+        layouts = self.gen_params.get(FetchLayouts)
 
+        self.halt = Method()
+        self.exec = Method(i=layouts.resume)
+        self.flush_icache = dm.get_dependency(FlushICacheKey())
+
+        # TODO just use one
         self.rf_read_req = Methods(2 * gen_params.frontend_superscalarity, i=gen_params.get(RFLayouts).rf_read_in)
         self.rf_read_resp = Methods(
             2 * gen_params.frontend_superscalarity,
@@ -157,7 +170,12 @@ class DebugModule(Component):
         with m.Switch(address):
             with m.Case(0x4): # data0
                 m.d.av_comb += rsp_op.eq(0) # TODO urgh such a mess of comb and sync
-                m.d.sync += rsp_data.eq(self.abstract_data)
+                m.d.sync += rsp_data.eq(self.abstract_data[0])
+                m.next = "RESP_WAITING"
+            with m.Case(0x5): # data1
+                m.d.av_comb += rsp_op.eq(0)
+                m.d.sync += rsp_data.eq(self.abstract_data[1])
+                m.next = "RESP_WAITING"
             with m.Case(0x10): # dmcontrol
                 m.d.av_comb += rsp_op.eq(0)
                 resp = Signal(self.dmcontrol_layout)
@@ -168,6 +186,7 @@ class DebugModule(Component):
                         resp.hartselhi.eq(self.hartsel[10:])
                         ]
                 m.d.sync += rsp_data.eq(resp)
+                m.next = "RESP_WAITING"
             with m.Case(0x11): # dmstatus
                 m.d.av_comb += rsp_op.eq(0)
                 resp = Signal(self.dmstatus_layout)
@@ -184,25 +203,45 @@ class DebugModule(Component):
                         resp.allnonexistent.eq(self.hartsel != 0),
                         ]
                 m.d.sync += rsp_data.eq(resp)
+                m.next = "RESP_WAITING"
             with m.Case(0x16): # abstractcs
                 resp = Signal(self.abstractcs_layout)
                 m.d.av_comb += [
-                        resp.datacount.eq(1),
+                        resp.datacount.eq(2),
                         resp.cmderr.eq(self.abstract_cmderr),
                         resp.busy.eq(self.abstract_busy),
                         resp.progbufsize.eq(16)
                         ]
                 m.d.sync += rsp_data.eq(resp)
+                m.next = "RESP_WAITING"
+            with m.Case(*range(0x20,0x30)): #progbuf
+                read_pending = Signal()
+                with m.If(~read_pending):
+                    with Transaction().body(m):
+                        self.bus.request_read(m, addr=(address - 0x20)*4 + 0x1000, sel=0xf)
+                        m.d.sync += read_pending.eq(1)
+                with m.Else():
+                    with Transaction().body(m):
+                        fetched = self.bus.get_read_response(m)
+                        m.d.sync += rsp_data.eq(fetched.data)
+                        m.d.av_comb += rsp_op.eq(0) # TODO busy stuff
+                        m.d.sync += read_pending.eq(0)
+                        m.next = "RESP_WAITING"
 
             with m.Default():
                 m.d.av_comb += rsp_op.eq(0)
                 m.d.sync += rsp_data.eq(0)
+                m.next = "RESP_WAITING"
 
     def write(self, m, address, data, rsp_op):
         with m.Switch(address):
             with m.Case(0x4): # data0
                 m.d.av_comb += rsp_op.eq(0)
-                m.d.sync += self.abstract_data.eq(data)
+                m.d.sync += self.abstract_data[0].eq(data)
+                m.next = "RESP_WAITING"
+            with m.Case(0x5): # data1
+                m.d.av_comb += rsp_op.eq(0)
+                m.d.sync += self.abstract_data[1].eq(data)
                 m.next = "RESP_WAITING"
             with m.Case(0x10): # dmcontrol
                 m.d.av_comb += rsp_op.eq(0)
@@ -225,6 +264,15 @@ class DebugModule(Component):
             with m.Case(0x11): # dmstatus
                 m.d.av_comb += rsp_op.eq(2)
                 m.next = "RESP_WAITING"
+            with m.Case(0x16): # abstractcs
+                m.d.av_comb += rsp_op.eq(0)
+                req = Signal(self.abstractcs_layout)
+                m.d.av_comb += [ # TODO anything else
+                                req.eq(data)
+                        ]
+                with m.If(req.cmderr): # TODO proper value
+                    m.d.sync += self.abstract_cmderr.eq(0)
+                m.next = "RESP_WAITING"
             with m.Case(0x17): # command
                 with m.If(self.abstract_busy):
                     m.d.av_comb += rsp_op.eq(2)
@@ -239,9 +287,23 @@ class DebugModule(Component):
                             ]
                 m.next = "RESP_WAITING"
             with m.Case(*range(0x20,0x30)): #progbuf
-                m.d.av_comb += rsp_op.eq(0) # TODO busy stuff
-                m.d.av_comb += self.progbuf[address - 0x20].eq(data)
-                m.next = "RESP_WAITING"
+                write_pending = Signal(2) # TODO dedup some of these
+                with m.If(write_pending == 0):
+                    with Transaction().body(m):
+                        self.bus.request_write(m, addr=(address - 0x20)*4 + 0x1000, data=data, sel=0xf)
+                        m.d.sync += write_pending.eq(1)
+                with m.Elif(write_pending == 1):
+                    with Transaction().body(m):
+                        fetched = self.bus.get_write_response(m) # TODO err
+                        m.d.sync += write_pending.eq(2)
+                with m.Elif(write_pending == 2):
+                    with Transaction().body(m):
+                        self.halt(m) # TODO don't need this one
+                        self.flush_icache(m)
+                        m.d.av_comb += rsp_op.eq(0)
+                        m.d.sync += write_pending.eq(0)
+                        m.next = "RESP_WAITING"
+
             with m.Default():
                 m.d.av_comb += rsp_op.eq(0)
                 m.next = "RESP_WAITING"
@@ -279,7 +341,6 @@ class DebugModule(Component):
                     m.d.av_comb += rsp_op.eq(0)
                     m.d.sync += rsp_data.eq(0)
                 with m.Elif(self.dmi.req_op == 1):
-                    m.next = "RESP_WAITING"
                     self.read(m, address, rsp_op, rsp_data)
                 with m.Elif(self.dmi.req_op == 2):
                     m.d.sync += rsp_data.eq(0)
@@ -304,58 +365,57 @@ class DebugModule(Component):
                 m.next = "REQ_READY"
                 m.d.sync += self.dmi.rsp_valid.eq(0)
 
-        with m.If(self.abstract_busy):
-            with m.Switch(self.abstract_type):
-                with m.Case(0): # Access Register
-                    arreq = Signal(self.access_register_layout)
-                    m.d.av_comb += [
-                            arreq.eq(data),
+        with m.If(self.abstract_busy), m.Switch(self.abstract_type):
+            with m.Case(0): # Access Register
+                arreq = Signal(self.access_register_layout)
+                m.d.av_comb += [
+                        arreq.eq(data),
+                        ]
+                with m.If(arreq.regno >= 0x1000), m.FSM():
+                    with m.State("Submit"), Transaction().body(m): # TODO write, transfer, err on postinc, sizes
+                        self.rf_read_req[0](m, arreq.regno - 0x1000) # TODO lol proper address
+                        m.next = "Read"
+                    with m.State("Read"), Transaction().body(m):
+                        reg_value = self.rf_read_resp[0](m, arreq.regno*4 - 0x1000)
+                        m.d.sync += [
+                                self.abstract_data[0].eq(reg_value.reg_val),
+                                self.abstract_busy.eq(0),
+                                self.abstract_cmderr.eq(0)
+                                ]
+                        with m.If(arreq.postexec):
+                            m.next = "Flush"
+                        with m.Else():
+                            m.next = "Submit"
+                    with m.State("Flush"), Transaction().body(m):
+                        self.flush_icache(m)
+                        m.next = "Exec"
+                    with m.State("Exec"), Transaction().body(m):
+                        self.exec(m, pc=0x1000) # TODO proper pc lol
+                        m.next = "Submit"
+                with m.Else():
+                    m.d.sync += [
+                            self.abstract_data[0].eq(0),
+                            self.abstract_cmderr.eq(2),
+                            self.abstract_busy.eq(0)
                             ]
-                    with m.If(arreq.regno >= 0x1000):
-                        with m.FSM():
-                            with m.State("Submit"):
-                                with Transaction().body(m):
-                                    self.rf_read_req[0](m, arreq.regno - 0x1000)
-                                    m.next = "Read"
-                            with m.State("Read"):
-                                with Transaction().body(m):
-                                    reg_value = self.rf_read_resp[0](m, arreq.regno - 0x1000)
-                                    m.d.sync += [
-                                            self.abstract_data.eq(reg_value.reg_val),
-                                            self.abstract_busy.eq(0),
-                                            self.abstract_cmderr.eq(0)
-                                            ]
-                                    m.next = "Submit"
-                    with m.Else():
-                            m.d.sync += [
-                                    self.abstract_data.eq(0),
-                                    self.abstract_cmderr.eq(2),
-                                    self.abstract_busy.eq(0)
-                                    ]
 
-                with m.Case(1): # Quick Access
-                    with Transaction().body(m):
-                        self.halt(m)
-                        m.d.sync += self.core_state.eq(CoreState.HALTED)
-                        self.abstract_busy.eq(0)
+            with m.Case(1), Transaction().body(m): # Quick Access
+                self.halt(m)
+                m.d.sync += self.core_state.eq(CoreState.HALTED)
+                self.abstract_busy.eq(0)
 
-                with m.Case(2): # Access Memory
-                    with m.FSM():
-                        with m.State("Submit"):
-                            with Transaction().body(m):
-                                self.bus.request_read(m, addr=0, sel=0)
-                                m.next = "Read"
-                        with m.State("Read"):
-                            with Transaction().body(m):
-                                fetched = self.bus.get_write_response(m)
-                                m.d.sync += [
-                                        self.abstract_data.eq(fetched),
-                                        self.abstract_busy.eq(0),
-                                        self.abstract_cmderr.eq(0)
-                                        ]
-                                m.next = "Submit"
-
-
+            with m.Case(2), m.FSM(): # Access Memory
+                with m.State("Submit"), Transaction().body(m):
+                    self.bus.request_read(m, addr=self.abstract_data[1], sel=0xf)
+                    m.next = "Read"
+                with m.State("Read"), Transaction().body(m):
+                    fetched = self.bus.get_write_response(m)
+                    m.d.sync += [
+                            self.abstract_data[0].eq(fetched),
+                            self.abstract_busy.eq(0),
+                            self.abstract_cmderr.eq(0)
+                            ]
+                    m.next = "Submit"
 
         # m.d.sync.reset += self.ndmreset lol how does reset work in coreblocks
 

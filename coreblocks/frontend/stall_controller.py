@@ -50,9 +50,11 @@ class StallController(Elaboratable):
 
         self.stall_unsafe = Method()
         self.stall_exception = Method()
+        self.stall_debug = Method()
         self.stall_guard = Method()
         self.resume_from_exception = Method(i=layouts.backend_redirect)
         self._resume_from_unsafe = Method(i=layouts.backend_redirect)
+        self.resume_from_debug = Method(i=layouts.backend_redirect)
 
         self.redirect_frontend = Method(i=layouts.backend_redirect)
 
@@ -63,8 +65,9 @@ class StallController(Elaboratable):
 
         stalled_unsafe = Signal()
         stalled_exception = Signal()
+        stalled_debug = Signal()
 
-        @def_method(m, self.stall_guard, ready=~(stalled_unsafe | stalled_exception), nonexclusive=True)
+        @def_method(m, self.stall_guard, ready=~(stalled_unsafe | stalled_exception | stalled_debug), nonexclusive=True)
         def _():
             pass
 
@@ -96,6 +99,14 @@ class StallController(Elaboratable):
             log.info(m, True, "Resuming from exception new_pc=0x{:x}", pc)
             self.redirect_frontend(m, ftq_ptr=ftq_ptr, pc=pc)
 
+        @def_method(m, self.resume_from_debug)
+        def _(ftq_ptr, pc):
+            m.d.sync += stalled_unsafe.eq(0)
+            m.d.sync += stalled_debug.eq(0)
+
+            log.info(m, True, "Resuming from debug new_pc=0x{:x}", pc)
+            self.redirect_frontend(m, ftq_ptr=ftq_ptr, pc=pc)
+
         @def_method(m, self.stall_unsafe)
         def _():
             log.assertion(m, ~stalled_unsafe, "Can't be stalled twice because of an unsafe instruction")
@@ -108,5 +119,10 @@ class StallController(Elaboratable):
         def _():
             log.info(m, ~stalled_exception, "Stalling the frontend because of an exception")
             m.d.sync += stalled_exception.eq(1)
+
+        @def_method(m, self.stall_debug)
+        def _():
+            log.info(m, ~stalled_debug, "Stalling the frontend because of debug")
+            m.d.sync += stalled_debug.eq(1)
 
         return m

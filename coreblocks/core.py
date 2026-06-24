@@ -132,6 +132,7 @@ class Core(Component):
             self.gen_params,
             rob_get_indices=self.ROB.get_indices,
             fetch_stall_exception=self.frontend.stall,
+            fetch_stall_debug=self.frontend.stall_debug
         )
 
         self.func_blocks_unifier = FuncBlocksUnifier(
@@ -258,7 +259,8 @@ class Core(Component):
         m.submodules.debug_jtag = self.debug_jtag
 
         # TODO make more like rest...
-        self.debug_module.halt.provide(self.frontend.stall_ctrl.stall_exception)
+        self.debug_module.halt.provide(self.frontend.stall_debug)
+        self.debug_module.exec.provide(self.frontend.stall_ctrl.resume_from_debug)
         self.debug_module.rf_read_req.provide(rf.read_req)
         self.debug_module.rf_read_resp.provide(rf.read_resp)
 
