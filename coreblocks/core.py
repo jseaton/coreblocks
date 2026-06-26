@@ -43,6 +43,7 @@ __all__ = ["Core"]
 class Core(Component):
     wb_instr: WishboneInterface
     wb_data: WishboneInterface
+    wb_debug: WishboneInterface
     interrupts: Signal
     debug: JTAGDebugInterface
 
@@ -51,6 +52,7 @@ class Core(Component):
             {
                 "wb_instr": Out(WishboneInterface(gen_params.wb_params).signature),
                 "wb_data": Out(WishboneInterface(gen_params.wb_params).signature),
+                "wb_debug": Out(WishboneInterface(gen_params.wb_params).signature),
                 "interrupts": In(ISA_RESERVED_INTERRUPTS + gen_params.interrupt_custom_count),
                 "debug": Out(JTAGDebugInterface().signature)
             }
@@ -65,12 +67,14 @@ class Core(Component):
 
         self.wb_master_instr = WishboneMaster(self.gen_params.wb_params, "instr")
         self.wb_master_data = WishboneMaster(self.gen_params.wb_params, "data")
+        self.wb_master_debug = WishboneMaster(self.gen_params.wb_params, "debug")
 
         self.bus_master_instr_adapter = WishboneMasterAdapter(self.wb_master_instr)
         self.bus_master_data_adapter = WishboneMasterAdapter(
             self.wb_master_data,
             port_count=2 if self.gen_params.vmem_params.supported_non_bare_schemes else 1,
         )
+        self.bus_master_debug_adapter = WishboneMasterAdapter(self.wb_master_debug)
 
         self.dm.add_dependency(CommonBusDataKey(), self.bus_master_data_adapter.ports[0])
 
@@ -151,7 +155,7 @@ class Core(Component):
             tags=range(gen_params.announcement_superscalarity + 1),
         )
 
-        self.debug_module = DebugModule(self.gen_params)
+        self.debug_module = DebugModule(self.gen_params, self.bus_master_debug_adapter)
         self.debug_jtag = DebugJTAGTAP(self.gen_params)
 
 
@@ -162,11 +166,13 @@ class Core(Component):
 
         connect(m.top_module, flipped(self.wb_instr), self.wb_master_instr.wb_master)
         connect(m.top_module, flipped(self.wb_data), self.wb_master_data.wb_master)
+        connect(m.top_module, flipped(self.wb_debug), self.wb_master_debug.wb_master)
 
         connect(m.top_module, flipped(self.debug), self.debug_jtag.jtag)
 
         m.submodules.wb_master_instr = self.wb_master_instr
         m.submodules.wb_master_data = self.wb_master_data
+        m.submodules.wb_master_debug = self.wb_master_debug
 
         m.submodules.bus_master_instr_adapter = self.bus_master_instr_adapter
         m.submodules.bus_master_data_adapter = self.bus_master_data_adapter
@@ -179,6 +185,8 @@ class Core(Component):
             m.submodules.l2_tlb = self.l2_tlb
             m.submodules.l1i_tlb = self.l1i_tlb
             m.submodules.l1d_tlb = self.l1d_tlb
+        
+        m.submodules.bus_master_debug_adapter = self.bus_master_debug_adapter
 
         m.submodules.frontend = self.frontend
 
@@ -261,8 +269,11 @@ class Core(Component):
         # TODO make more like rest...
         self.debug_module.halt.provide(self.frontend.stall_debug)
         self.debug_module.exec.provide(self.frontend.stall_ctrl.resume_from_debug)
+        self.debug_module.stall_guard.provide(self.frontend.stall_ctrl.stall_guard)
         self.debug_module.rf_read_req.provide(rf.read_req)
         self.debug_module.rf_read_resp.provide(rf.read_resp)
+        self.debug_module.enter_debug.provide(self.exception_information_register.enter_debug)
+        self.debug_module.leave_debug.provide(self.exception_information_register.leave_debug)
 
         connect(m.top_module, flipped(self.debug_jtag.dmi), self.debug_module.dmi)
 

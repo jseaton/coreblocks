@@ -166,3 +166,9 @@ class InstructionTaggedCounterKey(ListKey[tuple[str, Method]]):
     """
 
     pass
+
+@dataclass(frozen=True)
+class DebugModeKey(SimpleKey[Method]):
+    """
+    TODO
+    """

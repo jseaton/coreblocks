@@ -49,13 +49,14 @@ class DebugModule(Component):
     rf_read_req: Required[Methods]
     rf_read_resp: Required[Methods]
 
-    def __init__(self, gen_params: GenParams):
+    def __init__(self, gen_params: GenParams, bus: BusMasterInterface):
         super().__init__({"dmi": Out(DebugModuleInterface().signature)})
+
+        dm = DependencyContext.get()
 
         self.gen_params = gen_params
 
-        dm = DependencyContext.get()
-        self.bus = dm.get_dependency(CommonBusDataKey())
+        self.bus = dm.get_dependency(CommonBusDataKey()) # bus
 
         self.dmactive = Signal()
         self.ndmreset = Signal()
@@ -156,6 +157,7 @@ class DebugModule(Component):
 
         self.halt = Method()
         self.exec = Method(i=layouts.resume)
+        self.stall_guard = Method()
         self.flush_icache = dm.get_dependency(FlushICacheKey())
 
         # TODO just use one
@@ -165,6 +167,12 @@ class DebugModule(Component):
             i=gen_params.get(RFLayouts).rf_read_in,
             o=gen_params.get(RFLayouts).rf_read_out,
         )
+
+        # self.debug_mode = Method()
+        # self.dm.add_dependency(DebugModeKey(), self.debug_mode)
+
+        self.enter_debug = Method()
+        self.leave_debug = Method()
 
     def read(self, m, address, rsp_op, rsp_data):
         with m.Switch(address):
@@ -218,7 +226,7 @@ class DebugModule(Component):
                 read_pending = Signal()
                 with m.If(~read_pending):
                     with Transaction().body(m):
-                        self.bus.request_read(m, addr=(address - 0x20)*4 + 0x1000, sel=0xf)
+                        self.bus.request_read(m, addr=(address - 0x20) + 0x400000, sel=0xf)
                         m.d.sync += read_pending.eq(1)
                 with m.Else():
                     with Transaction().body(m):
@@ -257,7 +265,14 @@ class DebugModule(Component):
                 with m.If(req.haltreq):
                     with Transaction().body(m):
                         self.halt(m)
-                        m.d.sync += self.core_state.eq(CoreState.HALTED) # TODO for real
+                        self.enter_debug(m)
+                        m.d.sync += self.core_state.eq(CoreState.HALTED)
+                        m.next = "RESP_WAITING"
+                with m.Elif(req.resumereq):
+                    with Transaction().body(m):
+                        self.leave_debug(m)
+                        self.exec(m, pc=0) # TODO read mpc lol
+                        m.d.sync += self.core_state.eq(CoreState.RUNNING)
                         m.next = "RESP_WAITING"
                 with m.Else():
                     m.next = "RESP_WAITING"
@@ -290,7 +305,7 @@ class DebugModule(Component):
                 write_pending = Signal(2) # TODO dedup some of these
                 with m.If(write_pending == 0):
                     with Transaction().body(m):
-                        self.bus.request_write(m, addr=(address - 0x20)*4 + 0x1000, data=data, sel=0xf)
+                        self.bus.request_write(m, addr=(address - 0x20) + 0x400000, data=data, sel=0xf) # word aligned
                         m.d.sync += write_pending.eq(1)
                 with m.Elif(write_pending == 1):
                     with Transaction().body(m):
@@ -298,7 +313,7 @@ class DebugModule(Component):
                         m.d.sync += write_pending.eq(2)
                 with m.Elif(write_pending == 2):
                     with Transaction().body(m):
-                        self.halt(m) # TODO don't need this one
+                        #self.halt(m) # TODO don't need this one
                         self.flush_icache(m)
                         m.d.av_comb += rsp_op.eq(0)
                         m.d.sync += write_pending.eq(0)
@@ -317,6 +332,10 @@ class DebugModule(Component):
 
         rsp_data = Signal(32)
         rsp_op = Signal(2)
+
+        # with m.If(self.core_state == CoreState.HALTED), Transaction().body(m):
+        #     self.stall_guard(m)
+        #     m.d.sync += self.core_state.eq(CoreState.RUNNING)
 
 
         # TODO this probably has more wait states than necessary, but I'd rather get it right first!
@@ -371,8 +390,13 @@ class DebugModule(Component):
                 m.d.av_comb += [
                         arreq.eq(data),
                         ]
-                with m.If(arreq.regno >= 0x1000), m.FSM():
-                    with m.State("Submit"), Transaction().body(m): # TODO write, transfer, err on postinc, sizes
+                with m.If(arreq.aarsize != 2 | arreq.aarpostincrement): # 32-bit, post increment
+                    m.d.sync += [
+                            self.abstract_busy.eq(0),
+                            self.abstract_cmderr.eq(2) # not supported TODO add enum
+                            ]
+                with m.Elif(arreq.regno >= 0x1000), m.FSM():
+                    with m.State("Submit"), Transaction().body(m): # TODO write, transfer, err on postinc
                         self.rf_read_req[0](m, arreq.regno - 0x1000) # TODO lol proper address
                         m.next = "Read"
                     with m.State("Read"), Transaction().body(m):
@@ -387,10 +411,10 @@ class DebugModule(Component):
                         with m.Else():
                             m.next = "Submit"
                     with m.State("Flush"), Transaction().body(m):
-                        self.flush_icache(m)
+                        # self.flush_icache(m)
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
-                        self.exec(m, pc=0x1000) # TODO proper pc lol
+                        self.exec(m, pc=0x01000000) # TODO proper pc lol
                         m.next = "Submit"
                 with m.Else():
                     m.d.sync += [
@@ -401,6 +425,7 @@ class DebugModule(Component):
 
             with m.Case(1), Transaction().body(m): # Quick Access
                 self.halt(m)
+                self.enter_debug(m)
                 m.d.sync += self.core_state.eq(CoreState.HALTED)
                 self.abstract_busy.eq(0)
 
@@ -418,5 +443,9 @@ class DebugModule(Component):
                     m.next = "Submit"
 
         # m.d.sync.reset += self.ndmreset lol how does reset work in coreblocks
+
+        # @def_method(m, self.debug_mode, nonexclusive=True)
+        # def _():
+        #     return self.core_state == CoreState.HALTED
 
         return m

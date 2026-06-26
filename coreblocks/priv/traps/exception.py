@@ -92,6 +92,11 @@ class ExceptionInformationRegister(Elaboratable):
         self.fetch_stall_exception = fetch_stall_exception
         self.fetch_stall_debug = fetch_stall_debug
 
+        self.debug_mode = Signal() # TODO putting this here so debug module can be further out hopefully
+
+        self.enter_debug = Method()
+        self.leave_debug = Method()
+
     def elaborate(self, platform):
         m = TModule()
 
@@ -119,7 +124,7 @@ class ExceptionInformationRegister(Elaboratable):
 
             m.d.sync += self.valid.eq(1)
 
-            with m.If(cause == ExceptionCause.BREAKPOINT):
+            with m.If(self.debug_mode | cause == ExceptionCause.BREAKPOINT): # TODO properly
                 self.fetch_stall_debug(m)
             with m.Else():
                 # In case of any reported exception, core will need to be flushed. Fetch can be stalled immediately
@@ -136,5 +141,13 @@ class ExceptionInformationRegister(Elaboratable):
             for clear in self.clears:
                 clear(m)
             del self.clears  # exception will be raised if new fifos are created later
+
+        @def_method(m, self.enter_debug)
+        def _():
+            m.d.sync += self.debug_mode.eq(1)
+
+        @def_method(m, self.leave_debug)
+        def _():
+            m.d.sync += self.debug_mode.eq(0)
 
         return m
