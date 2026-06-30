@@ -272,6 +272,8 @@ class Core(Component):
         self.debug_module.stall_guard.provide(self.frontend.stall_ctrl.stall_guard)
         self.debug_module.rf_read_req.provide(rf.read_req)
         self.debug_module.rf_read_resp.provide(rf.read_resp)
+        self.debug_module.rf_write.provide(self.RF.write[0])
+        self.debug_module.reg_get_rename.provide(self.CRAT.get_reg)
         self.debug_module.enter_debug.provide(self.exception_information_register.enter_debug)
         self.debug_module.leave_debug.provide(self.exception_information_register.leave_debug)
 

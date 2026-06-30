@@ -433,6 +433,9 @@ class RATLayouts:
 
         self.crat_flush_restore_in = make_layout(self.entries)
 
+        self.get_reg_in = make_layout(("rl", gen_params.isa.reg_cnt_log))
+        self.get_reg_out = make_layout(fields.reg_id)
+
 
 class ROBLayouts:
     """Layouts used in the reorder buffer."""

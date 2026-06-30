@@ -84,6 +84,8 @@ class CheckpointRAT(Elaboratable):
         self.free_tag = Method()
         self.get_active_tags = Method(o=layouts.get_active_tags_out)
 
+        self.get_reg = Method(i=layouts.get_reg_in, o=layouts.get_reg_out)
+
     def elaborate(self, platform):
         m = TModule()
 
@@ -204,6 +206,10 @@ class CheckpointRAT(Elaboratable):
                 with m.If(active_renames[i].valid & (active_renames[i].rl_dst == rl)):
                     m.d.av_comb += rp.eq(active_renames[i].rp_dst)
             return rp
+
+        @def_method(m, self.get_reg)
+        def _(rl: Value):
+            return {"reg_id": frat_get(self.gen_params.frontend_superscalarity - 1, rl)}
 
         @def_methods(m, self.rename)
         def _(k: int, rp_dst: Value, rl_dst: Value, rl_s1: Value, rl_s2: Value):

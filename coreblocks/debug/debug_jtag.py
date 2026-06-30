@@ -1,5 +1,5 @@
 from amaranth import *
-from amaranth.lib.data import StructLayout
+from amaranth.lib.data import StructLayout, View
 from amaranth.lib.wiring import Component, In, Out
 
 from coreblocks.params.genparams import GenParams
@@ -38,16 +38,17 @@ class DebugJTAGTAP(Component):
             "abits": 6,
             "dmistat":  2,
             "idle": 3,
-            "0" : 1,
+            "0_0" : 1,
             "dmireset" : 1,
             "dtmhardreset" : 1,
-            "errinfo" : 3
+            "errinfo" : 3,
+            "0_1" : 11,
         })
 
         dmi_layout = StructLayout({
             "op" : 2,
             "data" : 32,
-            "address" : 32
+            "address" : ABITS
         })
 
         m.domains.jtag_pos = cd_jtag_pos = ClockDomain()
@@ -56,12 +57,10 @@ class DebugJTAGTAP(Component):
         m.d.comb += cd_jtag_neg.clk.eq(~self.jtag.tck)
 
         ir = Signal(5)
-        dr = Signal(33+ABITS)
+        dr = Signal(2+32+ABITS)
 
         read = Signal()
         write = Signal()
-
-        dtmcs = Signal(32)
 
         req_dmi_op = Signal(2)
         req_dmi_data = Signal(32)
@@ -196,7 +195,7 @@ class DebugJTAGTAP(Component):
             with m.Case(0x1): # idcode
                 m.d.jtag_pos += dr.eq(0x10003FFF)
             with m.Case(0x10): # dtmcs
-                resp = Signal(dtmcs_layout) # TODO use View
+                resp = Signal(dtmcs_layout)
                 m.d.comb += [
                         resp.version.eq(1),
                         resp.abits.eq(ABITS),
@@ -205,7 +204,7 @@ class DebugJTAGTAP(Component):
                         ]
                 m.d.jtag_pos += dr.eq(resp)
             with m.Case(0x11): # dmi
-                resp = Signal(dmi_layout) # TODO use View
+                resp = Signal(dmi_layout)
                 m.d.comb += [
                         resp.op.eq(rsp_dmi_op),
                         resp.data.eq(rsp_dmi_data),
@@ -216,8 +215,7 @@ class DebugJTAGTAP(Component):
             with m.Case(0x0, 0x1, 0x12, 0x13, 0x14, 0x15, 0x17, 0x1f): # bypass, idcode
                 pass
             with m.Case(0x10): # dtmcs
-                req = Signal(dtmcs_layout) # TODO use View
-                m.d.comb += req.eq(dr)
+                req = View(dtmcs_layout, dr[:32])
                 with m.If(req.dmireset): # TODO reset fsm...
                     m.d.jtag_pos += [
                             dr.eq(0),
@@ -227,8 +225,7 @@ class DebugJTAGTAP(Component):
                 with m.If(req.dtmhardreset): # TODO
                     pass
             with m.Case(0x11): # dmi
-                req = Signal(dmi_layout) # TODO use View
-                m.d.comb += req.eq(dr)
+                req = View(dmi_layout, dr)
                 m.d.sync += [
                         req_dmi_op.eq(req.op),
                         req_dmi_data.eq(req.data),
