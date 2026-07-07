@@ -356,11 +356,6 @@ class DebugModule(Component):
         rsp_data = Signal(32)
         rsp_op = Signal(2)
 
-        # with m.If(self.core_state == CoreState.HALTED), Transaction().body(m):
-        #     self.stall_guard(m)
-        #     m.d.sync += self.core_state.eq(CoreState.RUNNING)
-
-
         # TODO this probably has more wait states than necessary, but I'd rather get it right first!
         with m.FSM():
             with m.State("REQ_READY"):
@@ -472,29 +467,12 @@ class DebugModule(Component):
                             self.abstract_busy.eq(0)
                             ]
 
-            with m.Case(1), Transaction().body(m): # Quick Access
-                self.raise_debug_interrupt(m)
-                # self.enter_debug(m)
-                m.d.sync += self.core_state.eq(CoreState.HALTED)
-                self.abstract_busy.eq(0)
-
-            with m.Case(2), m.FSM(): # Access Memory TODO we don't 100% need this given progbuf, but might be nice to fully implement for physical memory access
-                with m.State("Submit"), Transaction().body(m):
-                    self.bus.request_read(m, addr=self.abstract_data[1], sel=0xf)
-                    m.next = "Read"
-                with m.State("Read"), Transaction().body(m):
-                    fetched = self.bus.get_write_response(m)
-                    m.d.sync += [
-                            self.abstract_data[0].eq(fetched),
-                            self.abstract_busy.eq(0),
-                            self.abstract_cmderr.eq(0)
-                            ]
-                    m.next = "Submit"
+            with m.Default():
+                m.d.sync += [
+                        self.abstract_busy.eq(0),
+                        self.abstract_cmderr.eq(2)
+                        ]
 
         # m.d.sync.reset += self.ndmreset lol how does reset work in coreblocks
-
-        # @def_method(m, self.debug_mode, nonexclusive=True)
-        # def _():
-        #     return self.core_state == CoreState.HALTED
 
         return m
