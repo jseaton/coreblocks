@@ -185,14 +185,17 @@ class JumpBranchFuncUnit(FuncUnitBase[JumpBranchFn]):
                     mtval=instr.jmp_addr,
                 )
 
-            with m.Elif(async_interrupt_active & ~is_auipc):
+            with m.Elif(async_interrupt_active.any() & ~is_auipc):
                 # Jump instructions are entry points for async interrupts.
                 # This way we can store known pc via report to global exception register and avoid it in ROB.
                 # Exceptions have priority, because the instruction that reports async interrupt is commited
                 # and exception would be lost.
                 m.d.comb += exception.eq(1)
+                cause = Signal(ExceptionCause)
+                m.d.comb += cause.eq(Mux(async_interrupt_active[1], ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
+
                 self.exception_report(
-                    m, rob_id=instr.rob_id, cause=ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT, pc=jump_result, mtval=0
+                    m, rob_id=instr.rob_id, cause=cause, pc=jump_result, mtval=0
                 )
             with m.Elif(misprediction):
                 # Async interrupts can have priority, because `jump_result` is handled in the same way.

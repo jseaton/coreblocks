@@ -124,7 +124,8 @@ class ExceptionInformationRegister(Elaboratable):
 
             m.d.sync += self.valid.eq(1)
 
-            with m.If(self.debug_mode | cause == ExceptionCause.BREAKPOINT): # TODO properly
+            with m.If(self.debug_mode | (cause == ExceptionCause.BREAKPOINT) | (cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT)): # TODO properly
+                m.d.sync += self.debug_mode.eq(1)
                 self.fetch_stall_debug(m)
             with m.Else():
                 # In case of any reported exception, core will need to be flushed. Fetch can be stalled immediately

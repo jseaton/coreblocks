@@ -250,6 +250,9 @@ class Retirement(Elaboratable):
 
                             m.d.sync += trap_target_priv.eq(target_priv)
 
+                        with m.If(cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT):
+                            m_csr.dpc.write(m, cause_register.pc)
+
                         # Fetch is already stalled by ExceptionCauseRegister
                         with m.If(core_empty):
                             m.next = "TRAP_RESUME"

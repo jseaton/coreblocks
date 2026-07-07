@@ -267,7 +267,8 @@ class Core(Component):
         m.submodules.debug_jtag = self.debug_jtag
 
         # TODO make more like rest...
-        self.debug_module.halt.provide(self.frontend.stall_debug)
+        self.debug_module.raise_debug_interrupt.provide(self.interrupt_controller.raise_debug)
+        self.debug_module.clear_debug_interrupt.provide(self.interrupt_controller.clear_debug)
         self.debug_module.exec.provide(self.frontend.stall_ctrl.resume_from_debug)
         self.debug_module.stall_guard.provide(self.frontend.stall_ctrl.stall_guard)
         self.debug_module.rf_read_req.provide(rf.read_req)

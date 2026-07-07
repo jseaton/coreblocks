@@ -185,7 +185,7 @@ class InternalInterruptController(Component):
                 write_mask=self.sip_write_mask.method,
             )
 
-        self.interrupt_insert = Signal()
+        self.interrupt_insert = Signal(2)
         self.dm.add_dependency(AsyncInterruptInsertSignalKey(), self.interrupt_insert)
 
         self.wfi_resume = Signal()
@@ -202,6 +202,10 @@ class InternalInterruptController(Component):
         if gen_params.supervisor_mode:
             self.sret = Method()
             self.dm.add_dependency(SretKey(), self.sret)
+
+        self.pending_d = Signal()
+        self.raise_debug = Method()
+        self.clear_debug = Method()
 
     def elaborate(self, platform):
         m = TModule()
@@ -269,14 +273,15 @@ class InternalInterruptController(Component):
 
         m_interrupt_insert = Signal()
         s_interrupt_insert = Signal()
+        d_interrupt_insert = Signal()
 
         m.d.comb += [
             m_interrupt_insert.eq(pending_m.any() & interrupt_enable_m),
             s_interrupt_insert.eq(pending_s.any() & interrupt_enable_s),
-            self.interrupt_insert.eq(m_interrupt_insert | s_interrupt_insert),
+            self.interrupt_insert.eq(m_interrupt_insert | s_interrupt_insert | (self.pending_d << 1)),
         ]
 
-        m.d.comb += selected_pending.eq(Mux(m_interrupt_insert, pending_m, pending_s))
+        m.d.comb += selected_pending.eq(Mux(self.pending_d, 1, Mux(m_interrupt_insert, pending_m, pending_s)))
 
         # WFI is independent of global mstatus.xIE and mideleg
         m.d.comb += self.wfi_resume.eq(interrupt_pending)
@@ -287,6 +292,14 @@ class InternalInterruptController(Component):
             m.d.av_comb += new_data.eq(mip_value | self.new_edge_interrupts)
             self.mip.write(m, {"data": new_data})
         log.error(m, ~mip_trans.run, "assert transaction running failed")
+
+        @def_method(m, self.raise_debug)
+        def _():
+            m.d.sync += self.pending_d.eq(1)
+
+        @def_method(m, self.clear_debug)
+        def _():
+            m.d.sync += self.pending_d.eq(0)
 
         @def_method(m, self.mret)
         def _():
@@ -364,6 +377,7 @@ class InternalInterruptController(Component):
                     self.m_mode_csr.mstatus_mprv.write(m, 0)
 
         interrupt_priority = [
+            InterruptCauseNumber.DBG,
             InterruptCauseNumber.MEI,
             InterruptCauseNumber.MSI,
             InterruptCauseNumber.MTI,
@@ -384,7 +398,7 @@ class InternalInterruptController(Component):
         # sense, in case of every interrupt becoming disabled before reaching the retirement
         # NOTE2: we depend on the fact that writes to xIE stall the fetcher. In other case
         # interrupt could be explicitly disabled, after being irrecoverably inserted to the core.
-        with m.If(self.interrupt_insert):
+        with m.If(self.interrupt_insert[0]):
             m.d.sync += interrupt_cause.eq(top_interrupt)
 
         @def_method(m, self.interrupt_cause)

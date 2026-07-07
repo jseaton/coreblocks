@@ -256,8 +256,10 @@ class PrivilegedFuncUnit(FuncUnitBase[PrivilegedFn]):
                 # Interrupt is reported on this xRET instruction with return address set to instruction that we
                 # would normally return to (mepc value is preserved)
                 m.d.av_comb += exception.eq(1)
+                cause = Signal(ExceptionCause)
+                m.d.comb += cause.eq(Mux(async_interrupt_active[1], ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
                 self.exception_report(
-                    m, cause=ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT, pc=ret_pc, rob_id=instr_rob, mtval=0
+                    m, cause=cause, pc=ret_pc, rob_id=instr_rob, mtval=0
                 )
             with m.Elif(~core_state.flushing):
                 log.info(m, True, "Unstalling fetch from the priv unit new_pc=0x{:x}", ret_pc)

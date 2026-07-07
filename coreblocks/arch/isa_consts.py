@@ -171,6 +171,7 @@ class ExceptionCause(IntEnum, shape=5):
     STORE_PAGE_FAULT = 15
     _COREBLOCKS_ASYNC_INTERRUPT = 24
     _COREBLOCKS_MISPREDICTION = 25
+    _COREBLOCKS_DEBUG_INTERRUPT = 26
 
     @classmethod
     def smode_delegable_mask(cls, xlen: int) -> int:
@@ -200,6 +201,7 @@ class TrapVectorMode(IntEnum, shape=2):
 
 @unique
 class InterruptCauseNumber(IntEnum):
+    DBG = 0
     SSI = 1  # supervisor software interrupt
     MSI = 3  # machine software interrupt
     STI = 5  # supervisor timer interrupt

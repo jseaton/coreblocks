@@ -14,7 +14,8 @@ from transactron import *
 from coreblocks.peripherals.bus_adapter import BusMasterInterface
 from coreblocks.interface.keys import (
     CommonBusDataKey,
-    FlushICacheKey
+    FlushICacheKey,
+    CSRInstancesKey
 )
 
 class CoreState(Enum):
@@ -43,7 +44,8 @@ class DebugModule(Component):
     dmi: DebugModuleInterface
     bus: BusMasterInterface
 
-    halt: Required[Method]
+    raise_debug_interrupt: Required[Method]
+    clear_debug_interrupt: Required[Method]
     exec: Required[Method]
 
     rf_read_req: Required[Methods]
@@ -55,16 +57,18 @@ class DebugModule(Component):
     def __init__(self, gen_params: GenParams, bus: BusMasterInterface):
         super().__init__({"dmi": Out(DebugModuleInterface().signature)})
 
-        dm = DependencyContext.get()
+        self.dm = DependencyContext.get()
 
         self.gen_params = gen_params
 
-        self.bus = dm.get_dependency(CommonBusDataKey()) # bus
+        self.bus = self.dm.get_dependency(CommonBusDataKey()) # bus
 
         self.dmactive = Signal()
         self.ndmreset = Signal()
 
         self.core_state = Signal(CoreState, init=CoreState.RUNNING)
+
+        self.allresumeack = Signal()
 
         self.hartsel = Signal(1)
 
@@ -158,10 +162,11 @@ class DebugModule(Component):
 
         layouts = self.gen_params.get(FetchLayouts)
 
-        self.halt = Method()
+        self.raise_debug_interrupt = Method()
+        self.clear_debug_interrupt = Method()
         self.exec = Method(i=layouts.resume)
         self.stall_guard = Method()
-        self.flush_icache = dm.get_dependency(FlushICacheKey())
+        self.flush_icache = self.dm.get_dependency(FlushICacheKey())
 
         # TODO just use one
         self.rf_read_req = Methods(2 * gen_params.frontend_superscalarity, i=gen_params.get(RFLayouts).rf_read_in)
@@ -215,6 +220,8 @@ class DebugModule(Component):
                         resp.allunavail.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.UNAVAIL).bool()),
                         resp.anynonexistent.eq(self.hartsel != 0),
                         resp.allnonexistent.eq(self.hartsel != 0),
+                        resp.anyresumeack.eq(self.allresumeack),
+                        resp.allresumeack.eq(self.allresumeack),
                         ]
                 m.d.sync += rsp_data.eq(resp)
                 m.next = "RESP_WAITING"
@@ -248,6 +255,7 @@ class DebugModule(Component):
                 m.next = "RESP_WAITING"
 
     def write(self, m, address, data, rsp_op):
+        csr_instances = self.dm.get_dependency(CSRInstancesKey())
         with m.Switch(address):
             with m.Case(0x4): # data0
                 m.d.av_comb += rsp_op.eq(0)
@@ -270,15 +278,23 @@ class DebugModule(Component):
                         ]
                 with m.If(req.haltreq):
                     with Transaction().body(m):
-                        self.halt(m)
-                        self.enter_debug(m)
-                        m.d.sync += self.core_state.eq(CoreState.HALTED)
+                        self.raise_debug_interrupt(m)
+                        # self.enter_debug(m)
+                        m.d.sync += [
+                                self.core_state.eq(CoreState.HALTED),
+                                self.allresumeack.eq(0)
+                                ]
                         m.next = "RESP_WAITING"
                 with m.Elif(req.resumereq):
                     with Transaction().body(m):
+                        self.clear_debug_interrupt(m)
                         self.leave_debug(m)
-                        self.exec(m, pc=0) # TODO read mpc lol
-                        m.d.sync += self.core_state.eq(CoreState.RUNNING)
+                        pc = csr_instances.m_mode.dpc.read(m)
+                        self.exec(m, pc=pc.data)
+                        m.d.sync += [
+                                self.core_state.eq(CoreState.RUNNING),
+                                self.allresumeack.eq(1)
+                                ]
                         m.next = "RESP_WAITING"
                 with m.Else():
                     m.next = "RESP_WAITING"
@@ -457,8 +473,8 @@ class DebugModule(Component):
                             ]
 
             with m.Case(1), Transaction().body(m): # Quick Access
-                self.halt(m)
-                self.enter_debug(m)
+                self.raise_debug_interrupt(m)
+                # self.enter_debug(m)
                 m.d.sync += self.core_state.eq(CoreState.HALTED)
                 self.abstract_busy.eq(0)
 

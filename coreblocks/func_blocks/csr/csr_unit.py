@@ -242,10 +242,12 @@ class CSRUnit(FuncBlock, Elaboratable):
                 # At this time CSR operation is finished. If it caused triggering an interrupt, it would be represented
                 # by interrupt signal in this cycle.
                 # CSR instructions are never compressed, PC+4 is always next instruction
+                cause = Signal(ExceptionCause)
+                m.d.comb += cause.eq(Mux(interrupt[1], ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
                 self.report(
                     m,
                     rob_id=instr.rob_id,
-                    cause=ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT,
+                    cause=cause,
                     pc=instr.pc + self.gen_params.isa.ilen_bytes,
                     mtval=0,
                 )
