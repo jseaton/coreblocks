@@ -236,7 +236,7 @@ class CSRUnit(FuncBlock, Elaboratable):
                 )
                 m.d.av_comb += mtval[20:32].eq(instr.csr)
                 self.report(m, rob_id=instr.rob_id, cause=ExceptionCause.ILLEGAL_INSTRUCTION, pc=instr.pc, mtval=mtval)
-            with m.Elif(interrupt):
+            with m.Elif(interrupt.any()):
                 # SPEC: "These conditions for an interrupt trap to occur [..] must also be evaluated immediately
                 # following  [..] an explicit write to a CSR on which these interrupt trap conditions expressly depend."
                 # At this time CSR operation is finished. If it caused triggering an interrupt, it would be represented
@@ -262,7 +262,7 @@ class CSRUnit(FuncBlock, Elaboratable):
                 "rob_id": instr.rob_id,
                 "rp_dst": instr.rp_dst,
                 "result": current_result,
-                "exception": exception | interrupt,
+                "exception": exception | interrupt.any(),
             }
 
         return m

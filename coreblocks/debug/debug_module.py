@@ -46,7 +46,6 @@ class DebugModule(Component):
 
     raise_debug_interrupt: Required[Method]
     clear_debug_interrupt: Required[Method]
-    exec: Required[Method]
 
     rf_read_req: Required[Methods]
     rf_read_resp: Required[Methods]
@@ -164,8 +163,11 @@ class DebugModule(Component):
 
         self.raise_debug_interrupt = Method()
         self.clear_debug_interrupt = Method()
-        self.exec = Method(i=layouts.resume)
-        self.stall_guard = Method()
+
+        self.debug_resume = Method()
+        self.debug_resume_progbuf = Method(i=gen_params.get(RetirementLayouts).debug_resume_progbuf_in)
+
+
         self.flush_icache = self.dm.get_dependency(FlushICacheKey())
 
         # TODO just use one
@@ -182,7 +184,6 @@ class DebugModule(Component):
         # self.debug_mode = Method()
         # self.dm.add_dependency(DebugModeKey(), self.debug_mode)
 
-        self.enter_debug = Method()
         self.leave_debug = Method()
 
     def read(self, m, address, rsp_op, rsp_data):
@@ -279,18 +280,16 @@ class DebugModule(Component):
                 with m.If(req.haltreq):
                     with Transaction().body(m):
                         self.raise_debug_interrupt(m)
-                        # self.enter_debug(m)
                         m.d.sync += [
                                 self.core_state.eq(CoreState.HALTED),
                                 self.allresumeack.eq(0)
                                 ]
-                        m.next = "RESP_WAITING"
+                        m.next = "RESP_WAITING" # TODO wait for halt or whatever
                 with m.Elif(req.resumereq):
                     with Transaction().body(m):
                         self.clear_debug_interrupt(m)
                         self.leave_debug(m)
-                        pc = csr_instances.m_mode.dpc.read(m)
-                        self.exec(m, pc=pc.data)
+                        self.debug_resume(m)
                         m.d.sync += [
                                 self.core_state.eq(CoreState.RUNNING),
                                 self.allresumeack.eq(1)
@@ -429,10 +428,11 @@ class DebugModule(Component):
                         # self.flush_icache(m)
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
-                        self.exec(m, pc=0x01000000) # TODO proper pc lol
+                        self.clear_debug_interrupt(m)
+                        self.debug_resume_progbuf(m, pc=0x01000000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
-                        self.stall_guard(m) # TODO don't think this works
+                        # TODO actually stall
                         m.next = "Done"
                     with m.State("Done"):
                         m.d.sync += [
@@ -449,10 +449,11 @@ class DebugModule(Component):
                         # self.flush_icache(m)
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
-                        self.exec(m, pc=0x01000000) # TODO proper pc lol
+                        self.clear_debug_interrupt(m)
+                        self.debug_resume_progbuf(m, pc=0x01000000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
-                        self.stall_guard(m)
+                        # TODO actually stall
                         m.next = "Done"
                     with m.State("Done"):
                         m.d.sync += [

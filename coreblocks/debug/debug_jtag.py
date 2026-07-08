@@ -71,8 +71,6 @@ class DebugJTAGTAP(Component):
 
         dmi_submit = Signal()
 
-        wtf = Signal(4)
-
         reset_fsm = Signal()
 
         width = {
@@ -83,33 +81,28 @@ class DebugJTAGTAP(Component):
                 }
 
         with m.FSM(domain="jtag_pos"):
-            with m.State("Test-Logic-Reset"): # 0
-                m.d.comb += wtf.eq(0)
+            with m.State("Test-Logic-Reset"):
                 with m.If(~self.jtag.tms):
                     m.next = "Idle"
                 m.d.jtag_pos += ir.eq(1)
-            with m.State("Idle"): # 1
-                m.d.comb += wtf.eq(1)
+            with m.State("Idle"):
                 m.d.sync += dmi_submit.eq(0)
                 with m.If(self.jtag.tms):
                     m.next = "Select-DR-Scan"
 
-            with m.State("Select-DR-Scan"): # 2
-                m.d.comb += wtf.eq(2)
+            with m.State("Select-DR-Scan"):
                 m.d.sync += dmi_submit.eq(0)
                 with m.If(self.jtag.tms):
                     m.next = "Select-IR-Scan"
                 with m.Else():
                     m.next = "Capture-DR"
-            with m.State("Capture-DR"): # 3
-                m.d.comb += wtf.eq(3)
+            with m.State("Capture-DR"):
                 with m.If(self.jtag.tms):
                     m.next = "Exit1-DR"
                 with m.Else():
                     m.next = "Shift-DR"
                 m.d.comb += read.eq(1)
-            with m.State("Shift-DR"): # 4
-                m.d.comb += wtf.eq(4)
+            with m.State("Shift-DR"):
                 m.d.comb += read.eq(0)
                 with m.If(self.jtag.tms):
                     m.next = "Exit1-DR"
@@ -119,24 +112,20 @@ class DebugJTAGTAP(Component):
                         with m.If(ir == k):
                             m.d.jtag_neg += self.jtag.tdo.eq(dr[0])
                             m.d.jtag_pos += dr.eq(Cat(dr[1:v], self.jtag.tdi))
-            with m.State("Exit1-DR"): # 5
-                m.d.comb += wtf.eq(5)
+            with m.State("Exit1-DR"):
                 with m.If(self.jtag.tms):
                     m.next = "Update-DR"
                 with m.Else():
                     m.next = "Pause-DR"
             with m.State("Pause-DR"):
-                m.d.comb += wtf.eq(6)
-                with m.If(self.jtag.tms): # 6
+                with m.If(self.jtag.tms):
                     m.next = "Exit2-DR"
-            with m.State("Exit2-DR"): # 7
-                m.d.comb += wtf.eq(7)
+            with m.State("Exit2-DR"):
                 with m.If(self.jtag.tms):
                     m.next = "Update-DR"
                 with m.Else():
                     m.next = "Shift-DR"
-            with m.State("Update-DR"): # 8
-                m.d.comb += wtf.eq(8)
+            with m.State("Update-DR"):
                 m.d.comb += write.eq(1)
                 with m.If(reset_fsm):
                     m.next = "Test-Logic-Reset"
@@ -145,44 +134,37 @@ class DebugJTAGTAP(Component):
                 with m.Else():
                     m.next = "Idle"
 
-            with m.State("Select-IR-Scan"): # 9
-                m.d.comb += wtf.eq(9)
+            with m.State("Select-IR-Scan"):
                 with m.If(self.jtag.tms):
                     m.next = "Test-Logic-Reset"
                 with m.Else():
                     m.next = "Capture-IR"
-            with m.State("Capture-IR"): # a
-                m.d.comb += wtf.eq(0xa)
+            with m.State("Capture-IR"):
                 m.d.jtag_pos += ir.eq(1)
                 with m.If(self.jtag.tms):
                     m.next = "Exit1-IR"
                 with m.Else():
                     m.next = "Shift-IR"
-            with m.State("Shift-IR"): # b
-                m.d.comb += wtf.eq(0xb)
+            with m.State("Shift-IR"):
                 with m.If(self.jtag.tms):
                     m.next = "Exit1-IR"
                 with m.Else():
                     m.d.jtag_neg += self.jtag.tdo.eq(ir[0])
                     m.d.jtag_pos += ir.eq(Cat(ir[1:], self.jtag.tdi))
-            with m.State("Exit1-IR"): # c
-                m.d.comb += wtf.eq(0xc)
+            with m.State("Exit1-IR"):
                 with m.If(self.jtag.tms):
                     m.next = "Update-IR"
                 with m.Else():
                     m.next = "Pause-IR"
-            with m.State("Pause-IR"): # d
-                m.d.comb += wtf.eq(0xd)
+            with m.State("Pause-IR"):
                 with m.If(self.jtag.tms):
                     m.next = "Exit2-IR"
-            with m.State("Exit2-IR"): # e
-                m.d.comb += wtf.eq(0xe)
+            with m.State("Exit2-IR"):
                 with m.If(self.jtag.tms):
                     m.next = "Update-IR"
                 with m.Else():
                     m.next = "Shift-IR"
-            with m.State("Update-IR"): # f
-                m.d.comb += wtf.eq(0xf)
+            with m.State("Update-IR"):
                 with m.If(self.jtag.tms):
                     m.next = "Select-DR-Scan"
                 with m.Else():

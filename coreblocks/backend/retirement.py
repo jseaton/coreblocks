@@ -99,6 +99,8 @@ class Retirement(Elaboratable):
         layouts = self.gen_params.get(RetirementLayouts)
         self.dependency_manager = DependencyContext.get()
         self.core_state = Method(o=self.gen_params.get(RetirementLayouts).core_state)
+        self.debug_resume = Method()
+        self.debug_resume_progbuf = Method(i=self.gen_params.get(RetirementLayouts).debug_resume_progbuf_in)
         self.dependency_manager.add_dependency(CoreStateKey(), self.core_state)
 
         self.side_fx_guard = Method(i=layouts.side_fx_guard_in)
@@ -146,6 +148,7 @@ class Retirement(Elaboratable):
         continue_pc_override = Signal()
         continue_pc = Signal(self.gen_params.isa.xlen)
         core_flushing = Signal()
+        core_halted = Signal()
         trap_target_priv = Signal(PrivilegeLevel, init=PrivilegeLevel.MACHINE)
         ftq_commit_ptr = FTQPtr(gen_params=self.gen_params)
 
@@ -182,6 +185,9 @@ class Retirement(Elaboratable):
                 Mux(exception_one_hot[i], rob_entry.rob_id, 0) for i, rob_entry in enumerate(rob_entries.entries)
             )
             m.d.av_comb += retire_valid.eq(Mux(exception, ecr_entry.valid & (ecr_entry.rob_id == exception_rob_id), 1))
+
+        debug_stall = Signal(2) # TODO enum or something
+        debug_mode = Signal() # TODO this state might be better in the exception register after all? other things will need this
 
         with m.FSM("NORMAL") as fsm:
             with m.State("NORMAL"):
@@ -231,7 +237,7 @@ class Retirement(Elaboratable):
 
                             m.d.av_comb += cause_entry.eq(cause_register.cause)
 
-                        with m.If(arch_trap):
+                        with m.If(arch_trap): # TODO should I still set these in debug mode?
                             # Register RISC-V architectural trap in CSRs.
                             target_priv = self.trap_entry(m, cause=cause_entry).target_priv
 
@@ -250,12 +256,23 @@ class Retirement(Elaboratable):
 
                             m.d.sync += trap_target_priv.eq(target_priv)
 
-                        with m.If(cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT):
-                            m_csr.dpc.write(m, cause_register.pc)
+                        should_debug_stall = Signal()
+                        m.d.comb += should_debug_stall.eq((cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT) | debug_mode)
+
+                        with m.If(should_debug_stall):
+                            with m.If(~debug_mode):
+                                m_csr.dpc.write(m, cause_register.pc)
+                            m.d.sync += [
+                                    debug_stall.eq(1),
+                                    debug_mode.eq(1)
+                                    ]
 
                         # Fetch is already stalled by ExceptionCauseRegister
-                        with m.If(core_empty):
-                            m.next = "TRAP_RESUME"
+                        with m.If(core_empty.empty):
+                            with m.If(should_debug_stall):
+                                m.next = "TRAP_HALT"
+                            with m.Else():
+                                m.next = "TRAP_RESUME"
                         with m.Else():
                             m.next = "TRAP_FLUSH"
 
@@ -292,8 +309,15 @@ class Retirement(Elaboratable):
                         with m.If(i < retire_count):
                             flush_instr(i, rob_entries.entries[i])
 
-                    with m.If(core_empty):
-                        m.next = "TRAP_RESUME"
+                    with m.If(core_empty.empty):
+                        with m.If(debug_stall == 1):
+                            m.next = "TRAP_HALT"
+                        with m.Else():
+                            m.next = "TRAP_RESUME"
+
+            with m.State("TRAP_HALT"):
+                with m.If(debug_stall != 1):
+                    m.next = "TRAP_RESUME"
 
             with m.State("TRAP_RESUME"):
                 with Transaction(name="Retirement_RESUME").body(m):
@@ -314,23 +338,27 @@ class Retirement(Elaboratable):
                             tcause.eq(reg_cause.read(m).data),
                         ]
 
-                    with m.Switch(trap_target_priv):
-                        if self.gen_params.supervisor_mode:
-                            with m.Case(PrivilegeLevel.SUPERVISOR):
-                                assert s_csr is not None
-                                set_vals(s_csr.stvec_base, s_csr.stvec_mode, s_csr.scause)
-                        with m.Case(PrivilegeLevel.MACHINE):
-                            set_vals(m_csr.mtvec_base, m_csr.mtvec_mode, m_csr.mcause)
+                    with m.If(debug_stall.any()):
+                        m.d.av_comb += handler_pc.eq(m_csr.dpc.read(m).data)
+                    with m.Else():
+                        with m.Switch(trap_target_priv):
+                            if self.gen_params.supervisor_mode:
+                                with m.Case(PrivilegeLevel.SUPERVISOR):
+                                    assert s_csr is not None
+                                    set_vals(s_csr.stvec_base, s_csr.stvec_mode, s_csr.scause)
+                            with m.Case(PrivilegeLevel.MACHINE):
+                                set_vals(m_csr.mtvec_base, m_csr.mtvec_mode, m_csr.mcause)
 
-                    # When mode is Vectored, interrupts set pc to base + 4 * cause_number
-                    with m.If(tcause[-1] & (tvec_mode == TrapVectorMode.VECTORED)):
-                        m.d.av_comb += tvec_offset.eq(tcause << 2)
+                        # When mode is Vectored, interrupts set pc to base + 4 * cause_number
+                        with m.If(tcause[-1] & (tvec_mode == TrapVectorMode.VECTORED)):
+                            m.d.av_comb += tvec_offset.eq(tcause << 2)
 
-                    # (xtvec_base stores base[MXLEN-1:2])
-                    m.d.av_comb += handler_pc.eq((tvec_base << 2) + tvec_offset)
+                        # (xtvec_base stores base[MXLEN-1:2])
+                        m.d.av_comb += handler_pc.eq((tvec_base << 2) + tvec_offset)
 
                     resume_pc = Mux(continue_pc_override, continue_pc, handler_pc)
                     m.d.sync += continue_pc_override.eq(0)
+                    m.d.sync += debug_stall.eq(0)
 
                     self.fetch_continue(m, ftq_ptr=ftq_commit_ptr, pc=resume_pc)
 
@@ -346,6 +374,22 @@ class Retirement(Elaboratable):
         # Run side fx on first non-pure instr, if exception not encountered
         m.d.comb += self.pure_count.eq(count_trailing_zeros(Cat(~entry.pure for entry in rob_entries.entries)))
         side_fx_rob_id = Signal(self.gen_params.rob_entries_bits)
+
+        @def_method(m, self.debug_resume, ready=core_halted)
+        def _():
+            m.d.sync += [
+                    debug_stall.eq(2),
+                    debug_mode.eq(0)
+                    ]
+
+        @def_method(m, self.debug_resume_progbuf, ready=core_halted)
+        def _(pc):
+            m.d.sync += [
+                    debug_stall.eq(2),
+                    continue_pc.eq(pc),
+                    continue_pc_override.eq(1)
+                    ]
+
         exc_prefixes = Array(
             [
                 Cat(rob_entries.entries[j].exception for j in range(i)).any()
@@ -356,6 +400,7 @@ class Retirement(Elaboratable):
 
         # Disable executing any side effects from instructions in core when it is flushed
         m.d.comb += core_flushing.eq(fsm.ongoing("TRAP_FLUSH") | exc_prefixes[done_count])
+        m.d.comb += core_halted.eq(fsm.ongoing("TRAP_HALT"))
 
         # The argument is only used in argument validation, it is not needed in the method body.
         # A dummy combiner is provided.

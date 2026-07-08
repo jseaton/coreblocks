@@ -269,13 +269,15 @@ class Core(Component):
         # TODO make more like rest...
         self.debug_module.raise_debug_interrupt.provide(self.interrupt_controller.raise_debug)
         self.debug_module.clear_debug_interrupt.provide(self.interrupt_controller.clear_debug)
-        self.debug_module.exec.provide(self.frontend.stall_ctrl.resume_from_debug)
-        self.debug_module.stall_guard.provide(self.frontend.stall_ctrl.stall_guard)
+
+        
+        self.debug_module.debug_resume.provide(self.retirement.debug_resume)
+        self.debug_module.debug_resume_progbuf.provide(self.retirement.debug_resume_progbuf)
+
         self.debug_module.rf_read_req.provide(rf.read_req)
         self.debug_module.rf_read_resp.provide(rf.read_resp)
         self.debug_module.rf_write.provide(self.RF.write[0])
         self.debug_module.reg_get_rename.provide(self.CRAT.get_reg)
-        self.debug_module.enter_debug.provide(self.exception_information_register.enter_debug)
         self.debug_module.leave_debug.provide(self.exception_information_register.leave_debug)
 
         connect(m.top_module, flipped(self.debug_jtag.dmi), self.debug_module.dmi)

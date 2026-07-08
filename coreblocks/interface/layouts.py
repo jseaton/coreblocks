@@ -578,6 +578,7 @@ class RetirementLayouts:
 
         self.core_state: LayoutList = [self.flushing]
 
+        self.debug_resume_progbuf_in = make_layout(fields.pc)
 
 class RSLayouts:
     """Layouts used in the reservation station."""
