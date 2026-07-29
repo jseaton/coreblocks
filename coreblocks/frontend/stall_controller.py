@@ -51,6 +51,7 @@ class StallController(Elaboratable):
         self.stall_unsafe = Method()
         self.stall_exception = Method()
         self.stall_debug = Method()
+        self.debug_guard = Method()
         self.stall_guard = Method()
         self.resume_from_exception = Method(i=layouts.backend_redirect)
         self._resume_from_unsafe = Method(i=layouts.backend_redirect)
@@ -124,5 +125,9 @@ class StallController(Elaboratable):
         def _():
             log.info(m, ~stalled_debug, "Stalling the frontend because of debug")
             m.d.sync += stalled_debug.eq(1)
+
+        @def_method(m, self.debug_guard, ready=stalled_debug, nonexclusive=True)
+        def _():
+            pass
 
         return m

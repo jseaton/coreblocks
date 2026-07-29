@@ -938,6 +938,8 @@ class ExceptionRegisterLayouts:
 
         self.valid: LayoutListField = ("valid", 1)
 
+        self.debug_mode: LayoutListField = ("debug_mode", 1)
+
         self.report = make_layout(
             fields.cause,
             fields.rob_id,
@@ -945,7 +947,7 @@ class ExceptionRegisterLayouts:
             self.mtval,
         )
 
-        self.get = extend_layout(self.report, self.valid)
+        self.get = extend_layout(self.report, self.valid, self.debug_mode)
 
 
 class InternalInterruptControllerLayouts:

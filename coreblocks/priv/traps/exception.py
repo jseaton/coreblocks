@@ -124,17 +124,17 @@ class ExceptionInformationRegister(Elaboratable):
 
             m.d.sync += self.valid.eq(1)
 
-            # with m.If(self.debug_mode | (cause == ExceptionCause.BREAKPOINT) | (cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT)): # TODO properly
-            #     m.d.sync += self.debug_mode.eq(1)
-            #     self.fetch_stall_debug(m)
-            # with m.Else():
-                # In case of any reported exception, core will need to be flushed. Fetch can be stalled immediately
-            self.fetch_stall_exception(m)
+            # In case of any reported exception, core will need to be flushed. Fetch can be stalled immediately
+            with m.If(self.debug_mode | (cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT)):
+                m.d.sync += self.debug_mode.eq(1)
+                self.fetch_stall_debug(m)
+            with m.Else():
+                self.fetch_stall_exception(m)
 
 
         @def_method(m, self.get, nonexclusive=True)
         def _():
-            return {"rob_id": self.rob_id, "cause": self.cause, "pc": self.pc, "mtval": self.mtval, "valid": self.valid}
+            return {"rob_id": self.rob_id, "cause": self.cause, "pc": self.pc, "mtval": self.mtval, "valid": self.valid, "debug_mode": self.debug_mode}
 
         @def_method(m, self.clear)
         def _():

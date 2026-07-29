@@ -99,8 +99,6 @@ class Retirement(Elaboratable):
         layouts = self.gen_params.get(RetirementLayouts)
         self.dependency_manager = DependencyContext.get()
         self.core_state = Method(o=self.gen_params.get(RetirementLayouts).core_state)
-        self.debug_resume = Method()
-        self.debug_resume_progbuf = Method(i=self.gen_params.get(RetirementLayouts).debug_resume_progbuf_in)
         self.dependency_manager.add_dependency(CoreStateKey(), self.core_state)
 
         self.side_fx_guard = Method(i=layouts.side_fx_guard_in)
@@ -187,7 +185,6 @@ class Retirement(Elaboratable):
             m.d.av_comb += retire_valid.eq(Mux(exception, ecr_entry.valid & (ecr_entry.rob_id == exception_rob_id), 1))
 
         debug_stall = Signal(2) # TODO enum or something
-        debug_mode = Signal() # TODO this state might be better in the exception register after all? other things will need this
 
         with m.FSM("NORMAL") as fsm:
             with m.State("NORMAL"):
@@ -210,7 +207,17 @@ class Retirement(Elaboratable):
 
                         arch_trap = Signal(init=1)
 
-                        with m.If(cause_register.cause == ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT):
+                        with m.If(cause_register.debug_mode | (cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT)):
+                            m.d.av_comb += commit_trapping.eq(1)
+
+                            # Do not modify trap related CSRs
+                            m.d.av_comb += arch_trap.eq(0)
+
+                            with m.If(cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT):
+                                m_csr.dpc.write(m, cause_register.pc)
+
+                            m.d.sync += debug_stall.eq(1)
+                        with m.Elif(cause_register.cause == ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT):
                             # Async interrupts are inserted only by JumpBranchUnit and conditionally by MRET and CSR
                             # The PC field is set to address of instruction to resume from interrupt (e.g. for jumps
                             # it is a jump result).
@@ -256,23 +263,9 @@ class Retirement(Elaboratable):
 
                             m.d.sync += trap_target_priv.eq(target_priv)
 
-                        should_debug_stall = Signal()
-                        m.d.comb += should_debug_stall.eq((cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT) | debug_mode)
-
-                        with m.If(should_debug_stall):
-                            with m.If(~debug_mode):
-                                m_csr.dpc.write(m, cause_register.pc)
-                            m.d.sync += [
-                                    debug_stall.eq(1),
-                                    debug_mode.eq(1)
-                                    ]
-
                         # Fetch is already stalled by ExceptionCauseRegister
                         with m.If(core_empty.empty):
-                            with m.If(should_debug_stall):
-                                m.next = "TRAP_HALT"
-                            with m.Else():
-                                m.next = "TRAP_RESUME"
+                            m.next = "TRAP_RESUME"
                         with m.Else():
                             m.next = "TRAP_FLUSH"
 
@@ -310,14 +303,7 @@ class Retirement(Elaboratable):
                             flush_instr(i, rob_entries.entries[i])
 
                     with m.If(core_empty.empty):
-                        with m.If(debug_stall == 1):
-                            m.next = "TRAP_HALT"
-                        with m.Else():
-                            m.next = "TRAP_RESUME"
-
-            with m.State("TRAP_HALT"):
-                with m.If(debug_stall != 1):
-                    m.next = "TRAP_RESUME"
+                        m.next = "TRAP_RESUME"
 
             with m.State("TRAP_RESUME"):
                 with Transaction(name="Retirement_RESUME").body(m):
@@ -325,22 +311,20 @@ class Retirement(Elaboratable):
                     self.c_rat_restore(m, entries=self.r_rat_peek(m).entries)
                     self.perf_trap_latency.stop(m)
 
-                    handler_pc = Signal(self.gen_params.isa.xlen)
-                    tvec_offset = Signal(self.gen_params.isa.xlen)
-                    tvec_base = Signal(self.gen_params.isa.xlen)
-                    tvec_mode = Signal(TrapVectorMode)
-                    tcause = Signal(self.gen_params.isa.xlen)
+                    with m.If(~debug_stall):
+                        handler_pc = Signal(self.gen_params.isa.xlen)
+                        tvec_offset = Signal(self.gen_params.isa.xlen)
+                        tvec_base = Signal(self.gen_params.isa.xlen)
+                        tvec_mode = Signal(TrapVectorMode)
+                        tcause = Signal(self.gen_params.isa.xlen)
 
-                    def set_vals(reg_base, reg_mode, reg_cause):
-                        m.d.av_comb += [
-                            tvec_base.eq(reg_base.read(m).data),
-                            tvec_mode.eq(reg_mode.read(m).data),
-                            tcause.eq(reg_cause.read(m).data),
-                        ]
+                        def set_vals(reg_base, reg_mode, reg_cause):
+                            m.d.av_comb += [
+                                tvec_base.eq(reg_base.read(m).data),
+                                tvec_mode.eq(reg_mode.read(m).data),
+                                tcause.eq(reg_cause.read(m).data),
+                            ]
 
-                    with m.If(debug_stall.any()):
-                        m.d.av_comb += handler_pc.eq(m_csr.dpc.read(m).data)
-                    with m.Else():
                         with m.Switch(trap_target_priv):
                             if self.gen_params.supervisor_mode:
                                 with m.Case(PrivilegeLevel.SUPERVISOR):
@@ -356,11 +340,12 @@ class Retirement(Elaboratable):
                         # (xtvec_base stores base[MXLEN-1:2])
                         m.d.av_comb += handler_pc.eq((tvec_base << 2) + tvec_offset)
 
-                    resume_pc = Mux(continue_pc_override, continue_pc, handler_pc)
-                    m.d.sync += continue_pc_override.eq(0)
-                    m.d.sync += debug_stall.eq(0)
+                        resume_pc = Mux(continue_pc_override, continue_pc, handler_pc)
+                        m.d.sync += continue_pc_override.eq(0)
 
-                    self.fetch_continue(m, ftq_ptr=ftq_commit_ptr, pc=resume_pc)
+                        self.fetch_continue(m, ftq_ptr=ftq_commit_ptr, pc=resume_pc)
+
+                    m.d.sync += debug_stall.eq(0)
 
                     # Release pending trap state - allow accepting new reports
                     self.exception_cause_clear(m)
@@ -374,21 +359,6 @@ class Retirement(Elaboratable):
         # Run side fx on first non-pure instr, if exception not encountered
         m.d.comb += self.pure_count.eq(count_trailing_zeros(Cat(~entry.pure for entry in rob_entries.entries)))
         side_fx_rob_id = Signal(self.gen_params.rob_entries_bits)
-
-        @def_method(m, self.debug_resume, ready=core_halted)
-        def _():
-            m.d.sync += [
-                    debug_stall.eq(2),
-                    debug_mode.eq(0)
-                    ]
-
-        @def_method(m, self.debug_resume_progbuf, ready=core_halted)
-        def _(pc):
-            m.d.sync += [
-                    debug_stall.eq(2),
-                    continue_pc.eq(pc),
-                    continue_pc_override.eq(1)
-                    ]
 
         exc_prefixes = Array(
             [

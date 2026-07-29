@@ -271,8 +271,8 @@ class Core(Component):
         self.debug_module.clear_debug_interrupt.provide(self.interrupt_controller.clear_debug)
 
         
-        self.debug_module.debug_resume.provide(self.retirement.debug_resume)
-        self.debug_module.debug_resume_progbuf.provide(self.retirement.debug_resume_progbuf)
+        self.debug_module.debug_resume.provide(self.frontend.stall_ctrl.resume_from_debug)
+        self.debug_module.debug_guard.provide(self.frontend.stall_ctrl.debug_guard)
 
         self.debug_module.rf_read_req.provide(rf.read_req)
         self.debug_module.rf_read_resp.provide(rf.read_resp)

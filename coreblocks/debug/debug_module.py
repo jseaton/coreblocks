@@ -77,6 +77,7 @@ class DebugModule(Component):
 
         self.abstract_busy = Signal()
         self.abstract_cmderr = Signal(3)
+        self.abstract_reg = Signal(32)
 
         self.abstract_data = Array([Signal(32)]*2) # yes, just the two hopefully
 
@@ -164,9 +165,8 @@ class DebugModule(Component):
         self.raise_debug_interrupt = Method()
         self.clear_debug_interrupt = Method()
 
-        self.debug_resume = Method()
-        self.debug_resume_progbuf = Method(i=gen_params.get(RetirementLayouts).debug_resume_progbuf_in)
-
+        self.debug_resume = Method(i=layouts.backend_redirect)
+        self.debug_guard = Method()
 
         self.flush_icache = self.dm.get_dependency(FlushICacheKey())
 
@@ -180,9 +180,6 @@ class DebugModule(Component):
         self.rf_write = Method(i=gen_params.get(RFLayouts).rf_write)
 
         self.reg_get_rename = Method(i=gen_params.get(RATLayouts).get_reg_in, o=gen_params.get(RATLayouts).get_reg_out)
-
-        # self.debug_mode = Method()
-        # self.dm.add_dependency(DebugModeKey(), self.debug_mode)
 
         self.leave_debug = Method()
 
@@ -289,7 +286,8 @@ class DebugModule(Component):
                     with Transaction().body(m):
                         self.clear_debug_interrupt(m)
                         self.leave_debug(m)
-                        self.debug_resume(m)
+                        pc = csr_instances.m_mode.dpc.read(m)
+                        self.debug_resume(m, ftq_ptr={"ptr": 0, "parity": 0}, pc=pc.data)
                         m.d.sync += [
                                 self.core_state.eq(CoreState.RUNNING),
                                 self.allresumeack.eq(1)
@@ -305,7 +303,7 @@ class DebugModule(Component):
                 req = Signal(self.abstractcs_layout)
                 m.d.av_comb += [ # TODO anything else
                                 req.eq(data)
-                        ]
+                                ]
                 with m.If(req.cmderr): # TODO proper value
                     m.d.sync += self.abstract_cmderr.eq(0)
                 m.next = "RESP_WAITING"
@@ -314,14 +312,18 @@ class DebugModule(Component):
                     m.d.av_comb += rsp_op.eq(2)
                     m.d.sync += self.abstract_cmderr.eq(3)
                 with m.Else():
-                    m.d.sync += self.abstract_busy.eq(1)
+                    m.d.sync += [
+                            self.abstract_busy.eq(1),
+                            self.abstract_reg.eq(data)
+                    ]
+                            
                     m.d.av_comb += rsp_op.eq(0)
                     req = Signal(self.command_layout)
                     m.d.av_comb += [
-                            req.eq(data),
-                            self.abstract_control.eq(req.control),
-                            self.abstract_type.eq(req.cmdtype)
-                            ]
+                        req.eq(data),
+                        self.abstract_control.eq(req.control),
+                        self.abstract_type.eq(req.cmdtype)
+                    ]
                 m.next = "RESP_WAITING"
             with m.Case(*range(0x20,0x30)): #progbuf
                 write_pending = Signal(2) # TODO dedup some of these
@@ -405,15 +407,15 @@ class DebugModule(Component):
             with m.Case(0): # Access Register
                 arreq = Signal(self.access_register_layout)
                 m.d.av_comb += [
-                        arreq.eq(data),
-                        ]
+                    arreq.eq(self.abstract_reg),
+                ]
                 with m.If((arreq.aarsize != 2).bool() | arreq.aarpostincrement): # 32-bit, post increment
                     m.d.sync += [
                             self.abstract_busy.eq(0),
                             self.abstract_cmderr.eq(2) # not supported TODO add enum
                             ]
                 with m.Elif((arreq.regno >= 0x1000).bool() & ~arreq.write), m.FSM():
-                    with m.State("Submit"), Transaction().body(m): # TODO write, transfer, err on postinc
+                    with m.State("Submit"), Transaction().body(m): # TODO transfer
                         r = self.reg_get_rename(m, rl=arreq.regno - 0x1000)
                         self.rf_read_req[0](m, reg_id=r.reg_id) # TODO lol proper address
                         m.next = "Read"
@@ -429,10 +431,10 @@ class DebugModule(Component):
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         self.clear_debug_interrupt(m)
-                        self.debug_resume_progbuf(m, pc=0x01000000) # TODO proper pc lol
+                        self.debug_resume(m, ftq_ptr={"ptr": 0, "parity": 0}, pc=0x01000000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
-                        # TODO actually stall
+                        self.debug_guard(m)
                         m.next = "Done"
                     with m.State("Done"):
                         m.d.sync += [
@@ -441,7 +443,7 @@ class DebugModule(Component):
                                 ]
                         m.next = "Submit"
                 with m.Elif((arreq.regno >= 0x1000).bool() & arreq.write), m.FSM():
-                    with m.State("Submit"), Transaction().body(m): # TODO write, transfer, err on postinc
+                    with m.State("Submit"), Transaction().body(m): # TODO transfer
                         r = self.reg_get_rename(m, rl=arreq.regno - 0x1000)
                         self.rf_write(m, reg_id=r.reg_id, reg_val=self.abstract_data[0])
                         m.next = "Flush"
@@ -450,10 +452,10 @@ class DebugModule(Component):
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         self.clear_debug_interrupt(m)
-                        self.debug_resume_progbuf(m, pc=0x01000000) # TODO proper pc lol
+                        self.debug_resume(m, ftq_ptr={"ptr": 0, "parity": 0}, pc=0x01000000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
-                        # TODO actually stall
+                        self.debug_guard(m)
                         m.next = "Done"
                     with m.State("Done"):
                         m.d.sync += [
