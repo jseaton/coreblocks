@@ -11,6 +11,7 @@ from coreblocks.interface.layouts import (
     ROBLayouts,
     RetirementLayouts,
     FTQPtr,
+    FTQPtrLayout
 )
 
 from transactron.core import Method, Methods, Transaction, TModule, def_method
@@ -99,6 +100,7 @@ class Retirement(Elaboratable):
         layouts = self.gen_params.get(RetirementLayouts)
         self.dependency_manager = DependencyContext.get()
         self.core_state = Method(o=self.gen_params.get(RetirementLayouts).core_state)
+        self.ftq_commit_ptr = Method(o=self.gen_params.get(FTQPtrLayout))
         self.dependency_manager.add_dependency(CoreStateKey(), self.core_state)
 
         self.side_fx_guard = Method(i=layouts.side_fx_guard_in)
@@ -215,6 +217,8 @@ class Retirement(Elaboratable):
 
                             with m.If(cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT):
                                 m_csr.dpc.write(m, cause_register.pc)
+                            with m.Else(): # TODO ensure the other _COREBLOCKS can't happen here
+                                m_csr.dcsr_cause.write(m, cause_register.cause[0:3])
 
                             m.d.sync += debug_stall.eq(1)
                         with m.Elif(cause_register.cause == ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT):
@@ -355,6 +359,10 @@ class Retirement(Elaboratable):
         @def_method(m, self.core_state, nonexclusive=True)
         def _():
             return {"flushing": core_flushing}
+
+        @def_method(m, self.ftq_commit_ptr, nonexclusive=True)
+        def _():
+            return ftq_commit_ptr
 
         # Run side fx on first non-pure instr, if exception not encountered
         m.d.comb += self.pure_count.eq(count_trailing_zeros(Cat(~entry.pure for entry in rob_entries.entries)))

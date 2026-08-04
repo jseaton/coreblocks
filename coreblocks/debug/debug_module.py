@@ -17,6 +17,7 @@ from coreblocks.interface.keys import (
     FlushICacheKey,
     CSRInstancesKey
 )
+from coreblocks.arch import ExceptionCause
 
 class CoreState(Enum):
     NONEXISTENT = auto()
@@ -162,14 +163,20 @@ class DebugModule(Component):
 
         layouts = self.gen_params.get(FetchLayouts)
 
+        # For halting
         self.raise_debug_interrupt = Method()
         self.clear_debug_interrupt = Method()
 
-        self.debug_resume = Method(i=layouts.backend_redirect)
-        self.debug_guard = Method()
-
+        # For progbuf
         self.flush_icache = self.dm.get_dependency(FlushICacheKey())
 
+        # For resuming
+        self.debug_resume = Method(i=layouts.backend_redirect)
+        self.debug_guard = Method()
+        self.leave_debug = Method()
+        self.ftq_commit_ptr = Method(o=self.gen_params.get(FTQPtrLayout))
+
+        # For register read/write
         # TODO just use one
         self.rf_read_req = Methods(2 * gen_params.frontend_superscalarity, i=gen_params.get(RFLayouts).rf_read_in)
         self.rf_read_resp = Methods(
@@ -181,7 +188,6 @@ class DebugModule(Component):
 
         self.reg_get_rename = Method(i=gen_params.get(RATLayouts).get_reg_in, o=gen_params.get(RATLayouts).get_reg_out)
 
-        self.leave_debug = Method()
 
     def read(self, m, address, rsp_op, rsp_data):
         with m.Switch(address):
@@ -233,7 +239,7 @@ class DebugModule(Component):
                         ]
                 m.d.sync += rsp_data.eq(resp)
                 m.next = "RESP_WAITING"
-            with m.Case(*range(0x20,0x30)): #progbuf
+            with m.Case(*range(0x20, 0x30)): #progbuf
                 read_pending = Signal()
                 with m.If(~read_pending):
                     with Transaction().body(m):
@@ -243,7 +249,7 @@ class DebugModule(Component):
                     with Transaction().body(m):
                         fetched = self.bus.get_read_response(m)
                         m.d.sync += rsp_data.eq(fetched.data)
-                        m.d.av_comb += rsp_op.eq(0) # TODO busy stuff
+                        m.d.av_comb += rsp_op.eq(0) # TODO busy stuff um this shouldn't be comb??
                         m.d.sync += read_pending.eq(0)
                         m.next = "RESP_WAITING"
 
@@ -325,7 +331,7 @@ class DebugModule(Component):
                         self.abstract_type.eq(req.cmdtype)
                     ]
                 m.next = "RESP_WAITING"
-            with m.Case(*range(0x20,0x30)): #progbuf
+            with m.Case(*range(0x20, 0x30)): #progbuf
                 write_pending = Signal(2) # TODO dedup some of these
                 with m.If(write_pending == 0):
                     with Transaction().body(m):
@@ -337,7 +343,6 @@ class DebugModule(Component):
                         m.d.sync += write_pending.eq(2)
                 with m.Elif(write_pending == 2):
                     with Transaction().body(m):
-                        #self.halt(m) # TODO don't need this one
                         self.flush_icache(m)
                         m.d.av_comb += rsp_op.eq(0)
                         m.d.sync += write_pending.eq(0)
@@ -403,6 +408,9 @@ class DebugModule(Component):
                 m.next = "REQ_READY"
                 m.d.sync += self.dmi.rsp_valid.eq(0)
 
+        # TODO make self
+        csr_instances = self.dm.get_dependency(CSRInstancesKey())
+
         with m.If(self.abstract_busy), m.Switch(self.abstract_type):
             with m.Case(0): # Access Register
                 arreq = Signal(self.access_register_layout)
@@ -431,19 +439,23 @@ class DebugModule(Component):
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         self.clear_debug_interrupt(m)
-                        self.debug_resume(m, ftq_ptr={"ptr": 0, "parity": 0}, pc=0x01000000) # TODO proper pc lol
+                        ftq_ptr = self.ftq_commit_ptr(m)
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x01000000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
                         self.debug_guard(m)
+                        reason = csr_instances.m_mode.dcsr_cause.read(m)
                         m.next = "Done"
                     with m.State("Done"):
                         m.d.sync += [
                                 self.abstract_busy.eq(0),
                                 self.abstract_cmderr.eq(0)
                                 ]
+                        with m.If(arreq.postexec & (reason.data != ExceptionCause.BREAKPOINT)):
+                            m.d.sync += self.abstract_cmderr.eq(3)
                         m.next = "Submit"
                 with m.Elif((arreq.regno >= 0x1000).bool() & arreq.write), m.FSM():
-                    with m.State("Submit"), Transaction().body(m): # TODO transfer
+                    with m.State("Submit"), Transaction().body(m): # TODO transfer, merge this with write
                         r = self.reg_get_rename(m, rl=arreq.regno - 0x1000)
                         self.rf_write(m, reg_id=r.reg_id, reg_val=self.abstract_data[0])
                         m.next = "Flush"
@@ -452,16 +464,20 @@ class DebugModule(Component):
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         self.clear_debug_interrupt(m)
-                        self.debug_resume(m, ftq_ptr={"ptr": 0, "parity": 0}, pc=0x01000000) # TODO proper pc lol
+                        ftq_ptr = self.ftq_commit_ptr(m)
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x01000000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
                         self.debug_guard(m)
+                        reason = csr_instances.m_mode.dcsr_cause.read(m)
                         m.next = "Done"
                     with m.State("Done"):
                         m.d.sync += [
                                 self.abstract_busy.eq(0),
                                 self.abstract_cmderr.eq(0)
                                 ]
+                        with m.If(arreq.postexec & (reason.data != ExceptionCause.BREAKPOINT)):
+                            m.d.sync += self.abstract_cmderr.eq(3)
                         m.next = "Submit"
                 with m.Else():
                     m.d.sync += [

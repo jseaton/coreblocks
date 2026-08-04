@@ -103,6 +103,7 @@ class StallController(Elaboratable):
         @def_method(m, self.resume_from_debug)
         def _(ftq_ptr, pc):
             m.d.sync += stalled_unsafe.eq(0)
+            m.d.sync += stalled_exception.eq(0)
             m.d.sync += stalled_debug.eq(0)
 
             log.info(m, True, "Resuming from debug new_pc=0x{:x}", pc)

@@ -273,11 +273,13 @@ class Core(Component):
         
         self.debug_module.debug_resume.provide(self.frontend.stall_ctrl.resume_from_debug)
         self.debug_module.debug_guard.provide(self.frontend.stall_ctrl.debug_guard)
+        self.debug_module.ftq_commit_ptr.provide(retirement.ftq_commit_ptr)
 
         self.debug_module.rf_read_req.provide(rf.read_req)
         self.debug_module.rf_read_resp.provide(rf.read_resp)
         self.debug_module.rf_write.provide(self.RF.write[0])
         self.debug_module.reg_get_rename.provide(self.CRAT.get_reg)
+
         self.debug_module.leave_debug.provide(self.exception_information_register.leave_debug)
 
         connect(m.top_module, flipped(self.debug_jtag.dmi), self.debug_module.dmi)

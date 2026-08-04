@@ -29,6 +29,8 @@ __all__ = [
     "PrivUnitLayouts",
     "FetchTargetQueueLayouts",
     "BranchPredictionLayouts",
+    "ExceptionRegisterLayouts",
+    "FTQPtrLayout"
 ]
 
 
