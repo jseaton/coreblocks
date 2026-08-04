@@ -147,19 +147,25 @@ class RSBase(Elaboratable):
             self.perf_rs_wait_time.start(m, slot=rs_entry_id)
             self.log.debug(m, True, "inserted entry {}", rs_entry_id)
 
-        with Transaction().body(m):
-            self.order = order(m).order  # always ready!
+        with Transaction().always_body(m):
+            self.order = order(m).order
 
         @def_method(m, self.take)
         def _(rs_entry_id: Value) -> ReturnDict:
             actual_rs_entry_id = Signal.like(rs_entry_id)
             m.d.av_comb += actual_rs_entry_id.eq(self.order[rs_entry_id])
-            record = self.data[actual_rs_entry_id]
+
+            take_sel = Signal(self.rs_entries)
+            m.d.av_comb += take_sel.eq(Cat(actual_rs_entry_id == i for i in range(self.rs_entries)))
+            record = OneHotMux.create(m, [(take_sel[i], self.data[i].rs_data) for i in range(self.rs_entries)])
+
             free_idx(m, idx=rs_entry_id)
-            m.d.sync += record.rec_full.eq(0)
+            for i in range(self.rs_entries):
+                with m.If(take_sel[i]):
+                    m.d.sync += self.data[i].rec_full.eq(0)
             self.perf_rs_wait_time.stop(m, slot=actual_rs_entry_id)
             out = Signal(self.layouts.take_out)
-            m.d.av_comb += assign(out, record.rs_data, fields=AssignType.COMMON)
+            m.d.av_comb += assign(out, record, fields=AssignType.COMMON)
             self.log.debug(m, True, "taken entry {} at idx {}", actual_rs_entry_id, rs_entry_id)
             return out
 
@@ -174,7 +180,7 @@ class RSBase(Elaboratable):
         if self.perf_num_full.metrics_enabled():
             num_full = Signal(range(self.rs_entries + 1))
             m.d.comb += num_full.eq(popcount(Cat(self.data[entry_id].rec_full for entry_id in range(self.rs_entries))))
-            with Transaction(name="perf").body(m):
+            with Transaction(name="perf").always_body(m):
                 self.perf_num_full.add(m, num_full)
 
 

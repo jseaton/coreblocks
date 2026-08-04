@@ -1,3 +1,5 @@
+from functools import reduce
+from operator import or_
 from amaranth import *
 from amaranth_types import ValueLike
 from coreblocks.arch import CSRAddress
@@ -12,6 +14,8 @@ from coreblocks.arch.csr_address import (
 from coreblocks.arch.isa import Extension
 from coreblocks.arch.isa_consts import (
     PAGE_SIZE_LOG,
+    HPMEvent,
+    MisaExtension,
     SatpMode,
 )
 from coreblocks.arch.isa_consts import PrivilegeLevel, XlenEncoding, TrapVectorMode, PMPAFlagEncoding, PMPCfgLayout
@@ -24,7 +28,7 @@ from coreblocks.socks.clint import ClintMtimeKey
 from coreblocks.interface.keys import CSRInstancesKey
 from typing import Optional
 from amaranth.lib import data
-from transactron.core import Transaction, TModule
+from transactron.core import Method, Transaction, TModule, def_method
 from transactron.utils import DependencyContext, logging
 
 
@@ -219,8 +223,14 @@ class MachineModeCSRRegisters(Elaboratable):
         self._menvcfg_fields_implementation(gen_params, self.menvcfg, self.menvcfgh)
         self._mtvec_fields_implementation(gen_params, self.mtvec)
 
+        self.hpm_counters_count = gen_params.hpm_counters_count
         for i in range(3, 32):
             is_implemented = i < gen_params.hpm_counters_count + 3
+            # All 29 mhpmcounterN must exist per the privileged spec; the ones this core does
+            # not implement read as zero. Their unprivileged hpmcounterN shadows may legally
+            # either read as zero or raise an illegal-instruction exception - we choose zero,
+            # because the arch tests read every hpmcounterN and assume none of them trap.
+            # See https://github.com/riscv/riscv-isa-manual/issues/2558 for why the spec permits both.
             counter = DoubleCounterCSR(
                 gen_params,
                 low_addr=CSRAddress[f"MHPMCOUNTER{i}"],
@@ -254,6 +264,10 @@ class MachineModeCSRRegisters(Elaboratable):
 
         self.dpc = CSRRegister(CSRAddress.DPC, gen_params)
 
+        self.hpm_event_report = Method(i=[("events", len(HPMEvent))])
+        """Reports occurrences of HPM events (as a bit mask indexed by `HPMEvent`). Every implemented
+        `mhpmcounterN` whose `mhpmeventN` selects a reported event is incremented by one."""
+
     def elaborate(self, platform):
         m = TModule()
 
@@ -261,8 +275,24 @@ class MachineModeCSRRegisters(Elaboratable):
             if isinstance(value, (CSRRegisterBase, DoubleCounterCSR)):
                 m.submodules[name] = value
 
-        with Transaction().body(m):
+        with Transaction().always_body(m):
             self.mcycle.increment(m)
+
+        def hpm_event_combiner(m, args, runs):
+            return {"events": reduce(or_, (Mux(runs[i], arg.events, 0) for i, arg in enumerate(args)))}
+
+        @def_method(m, self.hpm_event_report, nonexclusive=True, combiner=hpm_event_combiner)
+        def _(events):
+            for i in range(3, 3 + self.hpm_counters_count):
+                counter = getattr(self, f"mhpmcounter{i}")
+                event_select = getattr(self, f"mhpmevent{i}").value
+                with m.Switch(event_select):
+                    for event in HPMEvent:
+                        if event == HPMEvent.NO_EVENT:
+                            continue
+                        with m.Case(event):
+                            with m.If(events[event]):
+                                counter.increment(m)
 
         return m
 
@@ -401,36 +431,21 @@ class MachineModeCSRRegisters(Elaboratable):
         )
 
     def _misa_value(self, gen_params):
-        misa_value = 0
+        misa_ext = MisaExtension(0)
 
-        misa_extension_bits = {
-            0: Extension.A,
-            1: Extension.B,
-            2: Extension.C,
-            3: Extension.D,
-            4: Extension.E,
-            5: Extension.F,
-            8: Extension.I,
-            12: Extension.M,
-            16: Extension.Q,
-            21: Extension.V,
-        }
-
-        for bit, extension in misa_extension_bits.items():
-            if extension in gen_params.isa.extensions:
-                misa_value |= 1 << bit
+        for ext in gen_params.isa.extensions:
+            if ext.name in MisaExtension:
+                misa_ext |= MisaExtension[ext.name]
 
         if gen_params.supervisor_mode:
-            misa_value |= 1 << 18
+            misa_ext |= MisaExtension.S
 
         if gen_params.user_mode:
-            misa_value |= 1 << 20
-        # 7 - Hypervisor, 23 - Custom Extensions
+            misa_ext |= MisaExtension.U
 
-        xml_field_mapping = {32: XlenEncoding.W32, 64: XlenEncoding.W64, 128: XlenEncoding.W128}
-        misa_value |= xml_field_mapping[gen_params.isa.xlen] << (gen_params.isa.xlen - 2)
+        misa_xlen = XlenEncoding.from_xlen(gen_params.isa.xlen)
 
-        return misa_value
+        return misa_ext.value | misa_xlen.value << (gen_params.isa.xlen - 2)
 
 
 class SupervisorModeCSRRegisters(Elaboratable):
@@ -597,7 +612,7 @@ class CSRInstances(Elaboratable):
         m.d.sync += time_counter.eq(time_counter + 1)
         time_source = time_counter if clint_mtime is None else clint_mtime
 
-        with Transaction().body(m):
+        with Transaction().always_body(m):
             if clint_mtime is not None:
                 self.time.write(m, data=time_source[: self.time.width])
                 if self.gen_params.isa.xlen == 32:
@@ -607,7 +622,7 @@ class CSRInstances(Elaboratable):
         if self.gen_params.isa.xlen == 32:
             m.submodules.timeh = self.timeh
 
-        with Transaction().body(m):
+        with Transaction().always_body(m):
             priv_mode = self.m_mode.priv_mode.read(m).data
             mprv = self.m_mode.mstatus_mprv.read(m).data
             log.assertion(

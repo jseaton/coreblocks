@@ -206,7 +206,7 @@ class CSRUnit(FuncBlock, Elaboratable):
                 m.d.sync += instr.s1_val.eq(reg_val)
                 m.d.sync += instr.rp_s1.eq(0)
 
-        with Transaction().body(m):
+        with Transaction().always_body(m):
             core_state = self.dependency_manager.get_dependency(CoreStateKey())(m)
 
         @def_method(m, self.get_result, done | (ready_to_process & core_state.flushing))
@@ -235,7 +235,14 @@ class CSRUnit(FuncBlock, Elaboratable):
                     )
                 )
                 m.d.av_comb += mtval[20:32].eq(instr.csr)
-                self.report(m, rob_id=instr.rob_id, cause=ExceptionCause.ILLEGAL_INSTRUCTION, pc=instr.pc, mtval=mtval)
+                self.report(
+                    m,
+                    cause=ExceptionCause.ILLEGAL_INSTRUCTION,
+                    rob_id=instr.rob_id,
+                    tag=instr.tag,
+                    pc=instr.pc,
+                    mtval=mtval,
+                )
             with m.Elif(interrupt.any()):
                 # SPEC: "These conditions for an interrupt trap to occur [..] must also be evaluated immediately
                 # following  [..] an explicit write to a CSR on which these interrupt trap conditions expressly depend."
@@ -246,8 +253,9 @@ class CSRUnit(FuncBlock, Elaboratable):
                 m.d.comb += cause.eq(Mux(interrupt[1], ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
                 self.report(
                     m,
-                    rob_id=instr.rob_id,
                     cause=cause,
+                    rob_id=instr.rob_id,
+                    tag=instr.tag,
                     pc=instr.pc + self.gen_params.isa.ilen_bytes,
                     mtval=0,
                 )

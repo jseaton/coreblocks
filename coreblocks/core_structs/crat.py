@@ -12,7 +12,7 @@ from transactron.utils import DependencyContext, assign, cyclic_mask, mod_incr, 
 
 from coreblocks.params import GenParams
 from coreblocks.interface.layouts import RATLayouts
-from coreblocks.interface.keys import CoreStateKey, RollbackKey
+from coreblocks.interface.keys import ActiveTagsKey, CoreStateKey, RollbackKey
 
 log = logging.HardwareLogger("core_structs.crat")
 
@@ -83,6 +83,7 @@ class CheckpointRAT(Elaboratable):
 
         self.free_tag = Method()
         self.get_active_tags = Method(o=layouts.get_active_tags_out)
+        self.dm.add_dependency(ActiveTagsKey(), self.get_active_tags)
 
         self.get_reg = Method(i=layouts.get_reg_in, o=layouts.get_reg_out)
 
@@ -459,7 +460,7 @@ class CheckpointRAT(Elaboratable):
             sample_width=ceil_log2(self.gen_params.checkpoint_count),
         )
         if perf_tags.metrics_enabled():
-            with Transaction().body(m):
+            with Transaction().always_body(m):
                 num_tags = Signal(self.gen_params.tag_bits + 1)
                 m.d.comb += num_tags.eq(
                     Mux(
@@ -470,10 +471,10 @@ class CheckpointRAT(Elaboratable):
                 )
                 perf_tags.add(m, num_tags)
         if perf_tags_active.metrics_enabled():
-            with Transaction().body(m):
+            with Transaction().always_body(m):
                 perf_tags_active.add(m, popcount(active_tags))
         if perf_checkpoints.metrics_enabled():
-            with Transaction().body(m):
+            with Transaction().always_body(m):
                 num_checkpoints = Signal(range(self.gen_params.checkpoint_count))
                 m.d.comb += num_checkpoints.eq(
                     Mux(

@@ -1,11 +1,11 @@
 from amaranth import signed
 from amaranth.lib.data import ArrayLayout
-from amaranth.lib.enum import IntFlag, IntEnum, auto
+from amaranth.lib.enum import IntFlag, Enum, auto
 from coreblocks.params import GenParams
 from coreblocks.arch import *
 from coreblocks.interface.views import CircularBufferPointer
 from transactron.utils import LayoutList, LayoutListField, layout_subset
-from transactron.utils.transactron_helpers import make_layout, extend_layout
+from transactron.utils.transactron_helpers import make_layout
 
 __all__ = [
     "CommonLayoutFields",
@@ -29,7 +29,8 @@ __all__ = [
     "PrivUnitLayouts",
     "FetchTargetQueueLayouts",
     "BranchPredictionLayouts",
-    "ExceptionRegisterLayouts",
+    "ExceptionInformationRegisterLayouts",
+    "RVVILayouts",
     "FTQPtrLayout"
 ]
 
@@ -93,6 +94,11 @@ class CommonLayoutFields:
         self.ftq_offset: LayoutListField = ("ftq_offset", gen_params.fetch_width_log)
         """Offset of an instruction (counted in number of instructions) within its FTQ entry (fetch block)"""
 
+        self.fetch_gen: LayoutListField = ("fetch_gen", 2)
+        """Generation counter of a fetch request, bumped each time its FTQ entry is (re)issued
+        to the IFU. 2 bits suffice: we assume (and assert) that IFU admits at most 4 blocks, so
+        at most 4 generations of one entry can coexist."""
+
         self.fb_addr: LayoutListField = ("fb_addr", gen_params.isa.xlen - gen_params.fetch_block_bytes_log)
         """Address of a fetch block"""
 
@@ -150,9 +156,6 @@ class CommonLayoutFields:
         self.rvc: LayoutListField = ("rvc", 1)
         """Instruction is a compressed (two-byte) one."""
 
-        self.predicted_taken: LayoutListField = ("predicted_taken", 1)
-        """If the branch was predicted taken."""
-
         self.cfi_idx: LayoutListField = ("cfi_idx", gen_params.fetch_width_log)
         """An index of a CFI instruction in a fetch block."""
 
@@ -187,8 +190,8 @@ class CommonLayoutFields:
 class AddressTranslationLayouts:
     """Layouts used by virtual-to-physical address translation methods."""
 
-    class TLBResult(IntEnum, shape=2):
-        HIT = auto()
+    class TLBResult(Enum, shape=2):
+        HIT = 0
         PAGE_FAULT = auto()
         ACCESS_FAULT = auto()
 
@@ -660,9 +663,13 @@ class ICacheLayouts:
 class BranchPredictionLayouts:
     def __init__(self, gen_params: GenParams):
         fields = gen_params.get(CommonLayoutFields)
+        fetch_layouts = gen_params.get(FetchLayouts)
 
         self.request = make_layout(fields.pc, fields.ftq_ptr)
-        self.write_prediction = make_layout(fields.pc, fields.ftq_ptr)
+        self.write_prediction = make_layout(fields.pc, fields.ftq_ptr, ("prediction", fetch_layouts.bpu_prediction))
+        self.update = make_layout(
+            fields.pc, fields.cfi_target, fields.cfi_idx, fields.cfi_type, ("taken", 1), ("mispredict", 1)
+        )
 
 
 class FetchTargetQueueLayouts:
@@ -670,7 +677,13 @@ class FetchTargetQueueLayouts:
         fields = gen_params.get(CommonLayoutFields)
 
         self.branch_resolve = make_layout(
-            ("from_pc", gen_params.isa.xlen), ("next_pc", gen_params.isa.xlen), ("misprediction", 1)
+            fields.ftq_ptr,
+            ("from_pc", gen_params.isa.xlen),
+            ("misprediction", 1),
+            ("taken", 1),
+            fields.cfi_idx,
+            fields.cfi_type,
+            fields.cfi_target,
         )
 
         self.commit = make_layout(fields.ftq_ptr)
@@ -702,7 +715,6 @@ class FetchLayouts:
             fields.pc,
             self.access_fault,
             fields.rvc,
-            fields.predicted_taken,
             fields.cfi_type,
             fields.ftq_ptr,
             fields.ftq_offset,
@@ -713,8 +725,12 @@ class FetchLayouts:
             ("data", ArrayLayout(self.raw_instr, gen_params.frontend_superscalarity)),
         )
 
-        self.fetch_request = make_layout(fields.pc, fields.ftq_ptr)
-        self.fetch_writeback = make_layout(fields.ftq_ptr, ("redirect", 1), fields.cfi_target)
+        self.fetch_request = make_layout(fields.pc, fields.ftq_ptr, fields.fetch_gen)
+        self.fetch_writeback = make_layout(
+            fields.ftq_ptr, ("redirect", 1), ("stall", 1), fields.cfi_idx, fields.cfi_type, fields.cfi_target
+        )
+        """redirect - steer fetch to cfi_target; stall - rewind, but wait for the backend
+        to resume (fault or unsafe instruction). Both drop the FTQ entries after ftq_ptr."""
         self.redirect = make_layout(fields.pc)
 
         # The ftq_ptr points to an FTQ entry such that no newer entries contain instructions that will be
@@ -727,9 +743,17 @@ class FetchLayouts:
             fields.branch_mask, fields.cfi_idx, fields.cfi_type, fields.cfi_target, ("cfi_target_valid", 1)
         )
 
+        self.check_stale_req = make_layout(fields.ftq_ptr, fields.fetch_gen)
+        """Ask whether the fetch request identified by (ftq_ptr, fetch_gen) is stale."""
+
+        self.check_stale_resp = make_layout(("stale", 1))
+        """A stale fetch block must be dropped without side effects."""
+
+        self.read_prediction_req = make_layout(fields.ftq_ptr)
+
         self.pred_checker_i = make_layout(
             fields.fb_addr,
-            ("instr_block_cross", 1),
+            ("starts_mid_instr", 1),
             ("instr_valid", gen_params.fetch_width),
             ("predecoded", ArrayLayout(self.predecoded_instr, gen_params.fetch_width)),
             ("prediction", self.bpu_prediction),
@@ -737,11 +761,13 @@ class FetchLayouts:
 
         self.pred_checker_o = make_layout(
             ("mispredicted", 1),
-            ("cfi_valid", 1),
             fields.cfi_idx,
             fields.cfi_type,
             fields.cfi_target,
         )
+        """cfi_type - type of the CFI the frontend follows in this block (on a misprediction,
+        the one causing the redirect). cfi_idx and cfi_target are meaningful only when cfi_type
+        is valid."""
 
 
 class DecodeLayouts:
@@ -843,12 +869,11 @@ class JumpBranchLayouts:
     def __init__(self, gen_params: GenParams):
         fields = gen_params.get(CommonLayoutFields)
 
-        self.predicted_jump_target_req = make_layout()
-        self.predicted_jump_target_resp = make_layout(fields.cfi_target, ("valid", 1))
+        self.predicted_jump_target_req = make_layout(fields.ftq_ptr)
+        self.predicted_jump_target_resp = make_layout(("valid", 1), fields.cfi_idx, fields.cfi_target)
 
         self.funct7_info = make_layout(
             fields.rvc,
-            fields.predicted_taken,
         )
         """Information passed from the frontend to the jumpbranch unit. Encoded in the funct7 field."""
 
@@ -871,8 +896,8 @@ class LSULayouts:
 class CSRRegisterLayouts:
     """Layouts used in the control and status registers."""
 
-    class WriteOpType(IntEnum):
-        CSR_WRITE = auto()
+    class WriteOpType(Enum, shape=2):
+        CSR_WRITE = 0
         CSR_SET = auto()
         CSR_CLEAR = auto()
 
@@ -929,7 +954,7 @@ class CSRUnitLayouts:
         assert self.imm_layout.size == gen_params.isa.xlen
 
 
-class ExceptionRegisterLayouts:
+class ExceptionInformationRegisterLayouts:
     """Layouts used in the exception information register."""
 
     def __init__(self, gen_params: GenParams):
@@ -939,17 +964,21 @@ class ExceptionRegisterLayouts:
         """ Value to set for mtval CSR register """
 
         self.valid: LayoutListField = ("valid", 1)
+        """ Information about exception is stored for a current speculation path """
 
         self.debug_mode: LayoutListField = ("debug_mode", 1)
 
-        self.report = make_layout(
+        self.data = make_layout(
             fields.cause,
             fields.rob_id,
+            fields.tag,
             fields.pc,
             self.mtval,
         )
 
-        self.get = extend_layout(self.report, self.valid, self.debug_mode)
+        self.report = self.data
+
+        self.get = make_layout(("data", self.data), self.valid, self.debug_mode)
 
 
 class InternalInterruptControllerLayouts:
@@ -980,3 +1009,39 @@ class PrivUnitLayouts:
         Needed for re-encoding the instruction for xtval, when access is illegal.
         """
         assert self.sfencevma_imm_layout.size == gen_params.isa.xlen
+
+
+class RVVILayouts:
+    """Layouts used in the RVVI interface."""
+
+    def __init__(self, gen_params: GenParams):
+        fields = gen_params.get(CommonLayoutFields)
+
+        self.instr_info = make_layout(
+            fields.instr,
+            fields.pc,
+        )
+
+        self.register_ftq = make_layout(
+            fields.ftq_ptr,
+            ("instrs", ArrayLayout(self.instr_info, gen_params.fetch_width)),
+        )
+
+        self.register_ftq_rob_assoc = make_layout(
+            fields.ftq_ptr,
+            fields.ftq_offset,
+            fields.rob_id,
+        )
+
+        self.register_reg_write = make_layout(
+            fields.reg_id,
+            fields.reg_val,
+        )
+
+        self.finalize_retire = make_layout(
+            fields.rob_id,
+            fields.rl_dst,
+            fields.rp_dst,
+            ("trap", 1),
+            ("interrupt", 1),
+        )

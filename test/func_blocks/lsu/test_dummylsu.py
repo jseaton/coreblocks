@@ -13,7 +13,7 @@ from coreblocks.params import configurations
 from coreblocks.arch import *
 from coreblocks.interface.keys import CoreStateKey, CSRInstancesKey, ExceptionReportKey, SideFxGuardKey
 from coreblocks.priv.csr.csr_instances import CSRInstances
-from coreblocks.interface.layouts import ExceptionRegisterLayouts, RetirementLayouts
+from coreblocks.interface.layouts import ExceptionInformationRegisterLayouts, RetirementLayouts
 from ...peripherals.bus_mock import BusMockParameters, MockMasterAdapter
 
 
@@ -74,7 +74,7 @@ class DummyLSUTestCircuit(Elaboratable):
         self.bus_master_adapter = MockMasterAdapter(bus_mock_params)
 
         m.submodules.exception_report = self.exception_report = TestbenchIO(
-            Adapter(i=self.gen.get(ExceptionRegisterLayouts).report)
+            Adapter(i=self.gen.get(ExceptionInformationRegisterLayouts).report)
         )
 
         DependencyContext.get().add_dependency(ExceptionReportKey(), lambda: self.exception_report.adapter.iface)
@@ -172,6 +172,7 @@ class TestDummyLSULoads(TestCaseWithSimulator):
                             ExceptionCause.LOAD_ADDRESS_MISALIGNED if misaligned else ExceptionCause.LOAD_ACCESS_FAULT
                         ),
                         "pc": 0,
+                        "tag": 0,
                         "mtval": addr,
                     }
                 )
@@ -328,6 +329,10 @@ class TestDummyLSULoadsCycles(TestCaseWithSimulator):
         def side_fx_guarder(rob_id, require_done):
             return {}
 
+        @def_method_mock(lambda: self.test_module.core_state)
+        def core_state_process():
+            return {"flushing": 0}
+
         with self.run_simulation(self.test_module) as sim:
             sim.add_testbench(self.one_instr_test)
 
@@ -428,6 +433,10 @@ class TestDummyLSUStores(TestCaseWithSimulator):
     def side_fx_guarder(self, rob_id, require_done):
         return {}
 
+    @def_method_mock(lambda self: self.test_module.core_state)
+    def core_state_process(self):
+        return {"flushing": 0}
+
     def test(self):
         @def_method_mock(lambda: self.test_module.exception_report)
         def exception_consumer(arg):
@@ -491,6 +500,10 @@ class TestDummyLSUFence(TestCaseWithSimulator):
                 pending_req = False
 
             return {"data": 1, "err": 0}
+
+        @def_method_mock(lambda: self.test_module.core_state)
+        def core_state_process():
+            return {"flushing": 0}
 
         with self.run_simulation(self.test_module) as sim:
             sim.add_testbench(self.process)

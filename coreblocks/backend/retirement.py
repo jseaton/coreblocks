@@ -3,7 +3,7 @@ from amaranth.lib.data import View
 from transactron.utils import count_trailing_zeros, or_value
 from coreblocks.interface.layouts import (
     CoreInstructionCounterLayouts,
-    ExceptionRegisterLayouts,
+    ExceptionInformationRegisterLayouts,
     FetchLayouts,
     InternalInterruptControllerLayouts,
     RATLayouts,
@@ -22,11 +22,12 @@ from transactron.lib.metrics import *
 from coreblocks.telemetry import RobFlush, RobRetire
 
 from coreblocks.params.genparams import GenParams
-from coreblocks.arch import ExceptionCause, PrivilegeLevel
+from coreblocks.arch import ExceptionCause, HPMEvent, PrivilegeLevel
 from coreblocks.arch.csr_address import CounterEnableFieldOffsets
 from coreblocks.interface.keys import (
     CoreStateKey,
     CSRInstancesKey,
+    RVVIHartCollectorKey,
     SideFxGuardKey,
     FTQCommitKey,
 )
@@ -60,10 +61,10 @@ class Retirement(Elaboratable):
         )
         self.free_rf_put = Methods(gen_params.retirement_superscalarity, i=[("ident", range(gen_params.phys_regs))])
         self.rf_free = Methods(gen_params.retirement_superscalarity, i=gen_params.get(RFLayouts).rf_free)
-        self.exception_cause_get = Method(o=gen_params.get(ExceptionRegisterLayouts).get)
+        self.exception_cause_get = Method(o=gen_params.get(ExceptionInformationRegisterLayouts).get)
         self.exception_cause_clear = Method()
         self.c_rat_restore = Method(i=gen_params.get(RATLayouts).crat_flush_restore_in)
-        self.fetch_continue = Method(i=self.gen_params.get(FetchLayouts).backend_redirect)
+        self.fetch_redirect = Method(i=self.gen_params.get(FetchLayouts).backend_redirect)
         self.instr_decrement = Method(
             i=gen_params.get(CoreInstructionCounterLayouts).decrement_in,
             o=gen_params.get(CoreInstructionCounterLayouts).decrement_out,
@@ -90,6 +91,9 @@ class Retirement(Elaboratable):
             "Number of retired instructions",
             ways=gen_params.retirement_superscalarity,
         )
+        self.perf_mispredictions = HwCounter(
+            "backend.retirement.mispredictions", "Number of committed branch mispredictions"
+        )
         self.perf_trap_latency = FIFOLatencyMeasurer(
             "backend.retirement.trap_latency",
             "Cycles spent flushing the core after a trap",
@@ -109,13 +113,15 @@ class Retirement(Elaboratable):
     def elaborate(self, platform):
         m = TModule()
 
-        m.submodules += [self.perf_instr_ret, self.perf_trap_latency]
+        m.submodules += [self.perf_instr_ret, self.perf_mispredictions, self.perf_trap_latency]
 
         csr_instances = self.dependency_manager.get_dependency(CSRInstancesKey())
         m_csr = csr_instances.m_mode
         s_csr = csr_instances.s_mode if self.gen_params.supervisor_mode else None
         m.submodules.instret_csr = self.instret_csr
         m.submodules.instret_shadow = self.instret_shadow
+
+        rvvi = self.dependency_manager.get_optional_dependency(RVVIHartCollectorKey())
 
         ftq_commit = self.dependency_manager.get_dependency(FTQCommitKey())
 
@@ -160,7 +166,7 @@ class Retirement(Elaboratable):
         done_mask = Signal.like(tag_incr_mask)
         free_checkpoint = Signal()
 
-        with Transaction().body(m):
+        with Transaction().always_body(m):
             rob_entries = self.rob_peek(m)
 
             # CRAT can currently deallocate at most one tag per cycle, this logic reduces the retire rate
@@ -184,7 +190,9 @@ class Retirement(Elaboratable):
             exception_rob_id = or_value(
                 Mux(exception_one_hot[i], rob_entry.rob_id, 0) for i, rob_entry in enumerate(rob_entries.entries)
             )
-            m.d.av_comb += retire_valid.eq(Mux(exception, ecr_entry.valid & (ecr_entry.rob_id == exception_rob_id), 1))
+            m.d.av_comb += retire_valid.eq(
+                Mux(exception, ecr_entry.valid & (ecr_entry.data.rob_id == exception_rob_id), 1)
+            )
 
         debug_stall = Signal(2) # TODO enum or something
 
@@ -200,14 +208,13 @@ class Retirement(Elaboratable):
 
                     commit_trapping = Signal()
 
+                    cause_register = self.exception_cause_get(m).data
+                    arch_trap = Signal(init=1)
+
                     with m.If(exception):
                         self.perf_trap_latency.start(m)
 
-                        cause_register = self.exception_cause_get(m)
-
                         cause_entry = Signal(self.gen_params.isa.xlen)
-
-                        arch_trap = Signal(init=1)
 
                         with m.If(cause_register.debug_mode | (cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT)):
                             m.d.av_comb += commit_trapping.eq(1)
@@ -240,6 +247,9 @@ class Retirement(Elaboratable):
 
                             m.d.sync += continue_pc_override.eq(1)
                             m.d.sync += continue_pc.eq(cause_register.pc)
+
+                            self.perf_mispredictions.incr(m)
+                            m_csr.hpm_event_report(m, events=1 << HPMEvent.BRANCH_MISPREDICTION)
                         with m.Else():
                             # RISC-V synchronous exceptions - don't retire instruction that caused exception,
                             # and later resume from it.
@@ -281,11 +291,25 @@ class Retirement(Elaboratable):
 
                     last_commit_ftq_ptr = Signal.like(rob_entries.entries[0].rob_data.ftq_ptr)
                     for i in range(self.gen_params.retirement_superscalarity):
+                        entry = rob_entries.entries[i]
+
                         with m.If(i - commit_trapping < no_trap_count):
-                            retire_instr(i, rob_entries.entries[i])
-                            m.d.av_comb += last_commit_ftq_ptr.eq(rob_entries.entries[i].rob_data.ftq_ptr)
+                            retire_instr(i, entry)
+                            m.d.av_comb += last_commit_ftq_ptr.eq(entry.rob_data.ftq_ptr)
+
+                            if rvvi is not None:
+                                rvvi.finalize_retire[i](
+                                    m,
+                                    rob_id=entry.rob_id,
+                                    rl_dst=entry.rob_data.rl_dst,
+                                    rp_dst=entry.rob_data.rp_dst,
+                                    trap=entry.exception & arch_trap,
+                                    interrupt=entry.exception
+                                    & (cause_register.cause == ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT),
+                                )
+
                         with m.Elif(i < retire_count):
-                            flush_instr(i, rob_entries.entries[i])
+                            flush_instr(i, entry)
 
                     # Commit the FTQ entry for the last retired instruction this cycle.
                     with m.If(no_trap_count.bool() | commit_trapping):
@@ -347,11 +371,11 @@ class Retirement(Elaboratable):
                         resume_pc = Mux(continue_pc_override, continue_pc, handler_pc)
                         m.d.sync += continue_pc_override.eq(0)
 
-                        self.fetch_continue(m, ftq_ptr=ftq_commit_ptr, pc=resume_pc)
+                        self.fetch_redirect(m, ftq_ptr=ftq_commit_ptr, pc=resume_pc)
 
                     m.d.sync += debug_stall.eq(0)
 
-                    # Release pending trap state - allow accepting new reports
+                    # Release pending trap state - allow accepting new reports and unstall fetch
                     self.exception_cause_clear(m)
 
                     m.next = "NORMAL"
