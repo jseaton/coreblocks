@@ -295,7 +295,7 @@ class InternalInterruptController(Component):
         def _():
             m.d.sync += self.pending_d.eq(1)
 
-        @def_method(m, self.clear_debug)
+        @def_method(m, self.clear_debug) # TODO remove
         def _():
             m.d.sync += self.pending_d.eq(0)
 

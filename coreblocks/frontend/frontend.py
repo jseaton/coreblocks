@@ -186,12 +186,4 @@ class CoreFrontend(Elaboratable):
             self.output_pipe.clear(m)
             self.bpu.flush(m)
 
-        @def_method(m, self.stall_debug)
-        def _():
-            self.fetch.flush(m)
-            self.instr_buffer.clear(m)
-            self.output_pipe.clear(m)
-            self.bpu.flush(m)
-            self.stall_ctrl.stall_debug(m)
-
         return m

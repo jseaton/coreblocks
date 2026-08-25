@@ -37,6 +37,7 @@ __all__ = [
     "InstructionTaggedCounterKey",
     "ActiveTagsKey",
     "RVVIHartCollectorKey",
+    "DebugInterruptKey"
 ]
 
 
@@ -89,6 +90,10 @@ class CSRInstancesKey(SimpleKey["CSRInstances"]):
 
 @dataclass(frozen=True)
 class AsyncInterruptInsertSignalKey(SimpleKey[Signal]):
+    pass
+
+@dataclass(frozen=True)
+class DebugInterruptKey(SimpleKey[Signal]):
     pass
 
 

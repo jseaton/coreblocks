@@ -15,7 +15,8 @@ from coreblocks.peripherals.bus_adapter import BusMasterInterface
 from coreblocks.interface.keys import (
     CommonBusDataKey,
     FlushICacheKey,
-    CSRInstancesKey
+    CSRInstancesKey,
+    DebugInterruptKey
 )
 from coreblocks.arch import ExceptionCause
 
@@ -46,7 +47,6 @@ class DebugModule(Component):
     bus: BusMasterInterface
 
     raise_debug_interrupt: Required[Method]
-    clear_debug_interrupt: Required[Method]
 
     rf_read_req: Required[Methods]
     rf_read_resp: Required[Methods]
@@ -67,6 +67,8 @@ class DebugModule(Component):
         self.ndmreset = Signal()
 
         self.core_state = Signal(CoreState, init=CoreState.RUNNING)
+
+        self.debug_interrupt = Signal()
 
         self.allresumeack = Signal()
 
@@ -165,7 +167,6 @@ class DebugModule(Component):
 
         # For halting
         self.raise_debug_interrupt = Method()
-        self.clear_debug_interrupt = Method()
 
         # For progbuf
         self.flush_icache = self.dm.get_dependency(FlushICacheKey())
@@ -187,6 +188,9 @@ class DebugModule(Component):
         self.rf_write = Method(i=gen_params.get(RFLayouts).rf_write)
 
         self.reg_get_rename = Method(i=gen_params.get(RATLayouts).get_reg_in, o=gen_params.get(RATLayouts).get_reg_out)
+
+        self.clear_debug_interrupt = Method()
+        self.dm.add_dependency(DebugInterruptKey(), self.debug_interrupt)
 
 
     def read(self, m, address, rsp_op, rsp_data):
@@ -243,7 +247,7 @@ class DebugModule(Component):
                 read_pending = Signal()
                 with m.If(~read_pending):
                     with Transaction().body(m):
-                        self.bus.request_read(m, addr=(address - 0x20) + 0x400000, sel=0xf)
+                        self.bus.request_read(m, addr=(address - 0x20) + 0x400800, sel=0xf)
                         m.d.sync += read_pending.eq(1)
                 with m.Else():
                     with Transaction().body(m):
@@ -281,19 +285,19 @@ class DebugModule(Component):
                         self.hartsel.eq(Cat(req.hartsello, req.hartselhi))
                         ]
                 with m.If(req.haltreq):
+                    m.d.sync += [
+                            self.debug_interrupt.eq(1),
+                            self.core_state.eq(CoreState.HALTED),
+                            self.allresumeack.eq(0)
+                            ]
+                    m.next = "RESP_WAITING" # TODO wait for halt or whatever
+                with m.Elif(req.resumereq): # TODO debug_stall first
                     with Transaction().body(m):
-                        self.raise_debug_interrupt(m)
-                        m.d.sync += [
-                                self.core_state.eq(CoreState.HALTED),
-                                self.allresumeack.eq(0)
-                                ]
-                        m.next = "RESP_WAITING" # TODO wait for halt or whatever
-                with m.Elif(req.resumereq):
-                    with Transaction().body(m):
-                        self.clear_debug_interrupt(m)
+                        self.debug_interrupt.eq(0),
                         self.leave_debug(m)
                         pc = csr_instances.m_mode.dpc.read(m)
-                        self.debug_resume(m, ftq_ptr={"ptr": 0, "parity": 0}, pc=pc.data)
+                        ftq_ptr = self.ftq_commit_ptr(m)
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=pc.data)
                         m.d.sync += [
                                 self.core_state.eq(CoreState.RUNNING),
                                 self.allresumeack.eq(1)
@@ -335,7 +339,7 @@ class DebugModule(Component):
                 write_pending = Signal(2) # TODO dedup some of these
                 with m.If(write_pending == 0):
                     with Transaction().body(m):
-                        self.bus.request_write(m, addr=(address - 0x20) + 0x400000, data=data, sel=0xf) # word aligned
+                        self.bus.request_write(m, addr=(address - 0x20) + 0x400800, data=data, sel=0xf) # word aligned
                         m.d.sync += write_pending.eq(1)
                 with m.Elif(write_pending == 1):
                     with Transaction().body(m):
@@ -438,9 +442,8 @@ class DebugModule(Component):
                         # self.flush_icache(m)
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
-                        self.clear_debug_interrupt(m)
                         ftq_ptr = self.ftq_commit_ptr(m)
-                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x01000000) # TODO proper pc lol
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x01002000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
                         self.debug_guard(m)
@@ -463,9 +466,8 @@ class DebugModule(Component):
                         # self.flush_icache(m)
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
-                        self.clear_debug_interrupt(m)
                         ftq_ptr = self.ftq_commit_ptr(m)
-                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x01000000) # TODO proper pc lol
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x01002000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
                         self.debug_guard(m)
@@ -493,5 +495,10 @@ class DebugModule(Component):
                         ]
 
         # m.d.sync.reset += self.ndmreset lol how does reset work in coreblocks
+        #
+
+        @def_method(m, self.clear_debug_interrupt, nonexclusive=True)
+        def _():
+            m.d.sync += self.debug_interrupt.eq(0)
 
         return m

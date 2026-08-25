@@ -31,7 +31,8 @@ __all__ = [
     "BranchPredictionLayouts",
     "ExceptionInformationRegisterLayouts",
     "RVVILayouts",
-    "FTQPtrLayout"
+    "FTQPtrLayout",
+    "DebugLayouts"
 ]
 
 
@@ -1044,4 +1045,15 @@ class RVVILayouts:
             fields.rp_dst,
             ("trap", 1),
             ("interrupt", 1),
+        )
+
+
+class DebugLayouts:
+    """Layouts used in the Debug Module."""
+
+    def __init__(self, gen_params: GenParams):
+        fields = gen_params.get(CommonLayoutFields)
+
+        self.handle_debug_interrupt = make_layout(
+            ("active", 1)
         )

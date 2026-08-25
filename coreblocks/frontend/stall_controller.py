@@ -7,6 +7,7 @@ from transactron.lib.metrics import *
 from transactron.utils import popcount, DependencyContext, MethodStruct
 from transactron.utils.assign import AssignArg
 from transactron import *
+from coreblocks.arch import ExceptionCause
 
 from coreblocks.params import *
 from coreblocks.interface.layouts import *
@@ -86,9 +87,12 @@ class StallController(Elaboratable):
             # Treat core flushing as a latched valid exception, all tags will be freed and invalidated during flush
             exception = self.get_exception_information(m)
 
-            with m.If((exception.valid | core_state.flushing) & ~stalled_exception):
+            with m.If((exception.valid | core_state.flushing) & ~(stalled_exception | stalled_debug)):
                 log.debug(m, True, "Stalling frontend - pending exception on speculative path")
-                m.d.sync += stalled_exception.eq(1)
+                with m.If(exception.debug_mode):
+                    m.d.sync += stalled_debug.eq(1)
+                with m.Else():
+                    m.d.sync += stalled_exception.eq(1)
                 self.frontend_flush(m)
 
             with m.If(~exception.valid & ~core_state.flushing & stalled_exception):

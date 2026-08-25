@@ -17,6 +17,7 @@ from coreblocks.interface.layouts import JumpBranchLayouts, CommonLayoutFields
 from coreblocks.interface.keys import (
     AsyncInterruptInsertSignalKey,
     BranchResolveKey,
+    DebugInterruptKey,
     ExceptionReportKey,
     PredictedJumpTargetKey,
 )
@@ -168,6 +169,7 @@ class JumpBranchFuncUnit(FuncUnitBase[JumpBranchFn]):
             ) != 0
 
             async_interrupt_active = self.dm.get_dependency(AsyncInterruptInsertSignalKey())
+            debug_interrupt_active = self.dm.get_dependency(DebugInterruptKey())
 
             exception = Signal()
 
@@ -186,14 +188,14 @@ class JumpBranchFuncUnit(FuncUnitBase[JumpBranchFn]):
                     mtval=instr.jmp_addr,
                 )
 
-            with m.Elif(async_interrupt_active.any() & ~is_auipc):
+            with m.Elif((async_interrupt_active.any() | debug_interrupt_active) & ~is_auipc):
                 # Jump instructions are entry points for async interrupts.
                 # This way we can store known pc via report to global exception register and avoid it in ROB.
                 # Exceptions have priority, because the instruction that reports async interrupt is commited
                 # and exception would be lost.
                 m.d.comb += exception.eq(1)
                 cause = Signal(ExceptionCause)
-                m.d.comb += cause.eq(Mux(async_interrupt_active[1], ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
+                m.d.comb += cause.eq(Mux(debug_interrupt_active, ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
 
                 self.exception_report(
                     m,

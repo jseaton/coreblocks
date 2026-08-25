@@ -3,6 +3,7 @@ from transactron import Provided, Transaction
 from transactron.utils.dependencies import DependencyContext
 from coreblocks.params.genparams import GenParams
 
+from coreblocks.arch import ExceptionCause
 from coreblocks.interface.layouts import ExceptionInformationRegisterLayouts, ROBLayouts
 from coreblocks.interface.keys import ActiveTagsKey, ExceptionReportKey
 from transactron.core import Required, TModule, def_method, Method
@@ -62,9 +63,6 @@ class ExceptionInformationRegister(Elaboratable):
 
         self.rob_get_indices = Method(o=gen_params.get(ROBLayouts).get_indices)
 
-        # TODO how does fetch_stall_exception happen now? aaa
-        # self.fetch_stall_debug = fetch_stall_debug
-
         self.debug_mode = Signal() # TODO putting this here so debug module can be further out hopefully
 
         self.leave_debug = Method()
@@ -101,9 +99,12 @@ class ExceptionInformationRegister(Elaboratable):
                 m.d.sync += self.data.eq(arg)
                 m.d.sync += self.valid.eq(1)
 
+            with m.If(arg.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT):
+                m.d.sync += self.debug_mode.eq(1)
+
         @def_method(m, self.get, nonexclusive=True)
         def _():
-            return {"data": self.data, "valid": self.valid}
+            return {"data": self.data, "valid": self.valid, "debug_mode": self.debug_mode}
 
         @def_method(m, self.clear)
         def _():

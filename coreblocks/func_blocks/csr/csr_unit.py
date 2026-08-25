@@ -18,6 +18,7 @@ from coreblocks.interface.layouts import FuncUnitLayouts, CSRUnitLayouts, RSInte
 from coreblocks.interface.keys import (
     CSRListKey,
     CoreStateKey,
+    DebugInterruptKey,
     UnsafeInstructionResolvedKey,
     CSRInstancesKey,
     SideFxGuardKey,
@@ -216,6 +217,7 @@ class CSRUnit(FuncBlock, Elaboratable):
             m.d.sync += done.eq(0)
 
             interrupt = self.dependency_manager.get_dependency(AsyncInterruptInsertSignalKey())
+            debug = self.dependency_manager.get_dependency(DebugInterruptKey())
             resume_core = self.dependency_manager.get_dependency(UnsafeInstructionResolvedKey())
 
             with m.If(exception):
@@ -243,14 +245,14 @@ class CSRUnit(FuncBlock, Elaboratable):
                     pc=instr.pc,
                     mtval=mtval,
                 )
-            with m.Elif(interrupt.any()):
+            with m.Elif(interrupt.any() | debug):
                 # SPEC: "These conditions for an interrupt trap to occur [..] must also be evaluated immediately
                 # following  [..] an explicit write to a CSR on which these interrupt trap conditions expressly depend."
                 # At this time CSR operation is finished. If it caused triggering an interrupt, it would be represented
                 # by interrupt signal in this cycle.
                 # CSR instructions are never compressed, PC+4 is always next instruction
                 cause = Signal(ExceptionCause)
-                m.d.comb += cause.eq(Mux(interrupt[1], ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
+                m.d.comb += cause.eq(Mux(debug, ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
                 self.report(
                     m,
                     cause=cause,
@@ -262,7 +264,7 @@ class CSRUnit(FuncBlock, Elaboratable):
 
             m.d.sync += exception.eq(0)
 
-            with m.If(~core_state.flushing & ~exception & ~interrupt):
+            with m.If(~core_state.flushing & ~exception & ~interrupt & ~debug):
                 # CSR instructions are never compressed, PC+4 is always next instruction
                 resume_core(m, ftq_ptr=instr.ftq_ptr, pc=instr.pc + self.gen_params.isa.ilen_bytes)
 
@@ -270,7 +272,7 @@ class CSRUnit(FuncBlock, Elaboratable):
                 "rob_id": instr.rob_id,
                 "rp_dst": instr.rp_dst,
                 "result": current_result,
-                "exception": exception | interrupt.any(),
+                "exception": exception | interrupt.any() | debug,
             }
 
         return m

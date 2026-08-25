@@ -279,8 +279,6 @@ class Core(Component):
 
         # TODO make more like rest...
         self.debug_module.raise_debug_interrupt.provide(self.interrupt_controller.raise_debug)
-        self.debug_module.clear_debug_interrupt.provide(self.interrupt_controller.clear_debug)
-
         
         self.debug_module.debug_resume.provide(self.frontend.stall_ctrl.resume_from_debug)
         self.debug_module.debug_guard.provide(self.frontend.stall_ctrl.debug_guard)
@@ -292,6 +290,8 @@ class Core(Component):
         self.debug_module.reg_get_rename.provide(self.CRAT.get_reg)
 
         self.debug_module.leave_debug.provide(self.exception_information_register.leave_debug)
+
+        self.retirement.clear_debug_interrupt.provide(self.debug_module.clear_debug_interrupt)
 
         connect(m.top_module, flipped(self.debug_jtag.dmi), self.debug_module.dmi)
 

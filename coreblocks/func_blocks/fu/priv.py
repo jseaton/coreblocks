@@ -19,6 +19,7 @@ from coreblocks.arch import OpType, ExceptionCause
 from coreblocks.interface.layouts import PrivUnitLayouts, FTQPtr
 from coreblocks.interface.keys import (
     CoreStateKey,
+    DebugInterruptKey,
     MretKey,
     SretKey,
     AsyncInterruptInsertSignalKey,
@@ -97,6 +98,7 @@ class PrivilegedFuncUnit(FuncUnitBase[PrivilegedFn]):
         mret = self.dm.get_dependency(MretKey())
         sret = self.dm.get_optional_dependency(SretKey())
         async_interrupt_active = self.dm.get_dependency(AsyncInterruptInsertSignalKey())
+        debug_interrupt_active = self.dm.get_dependency(DebugInterruptKey())
         wfi_resume = self.dm.get_dependency(WaitForInterruptResumeKey())
         csr = self.dm.get_dependency(CSRInstancesKey())
         priv_mode = csr.m_mode.priv_mode
@@ -249,7 +251,7 @@ class PrivilegedFuncUnit(FuncUnitBase[PrivilegedFn]):
                 self.exception_report(
                     m, cause=ExceptionCause.ILLEGAL_INSTRUCTION, rob_id=instr_rob, tag=instr_tag, pc=ret_pc, mtval=instr
                 )
-            with m.Elif(async_interrupt_active):
+            with m.Elif(async_interrupt_active | debug_interrupt_active):
                 # SPEC: "These conditions for an interrupt trap to occur [..] must also be evaluated immediately
                 # following the execution of an xRET instruction."
                 # mret() method is called (on side effect time) at least one cycle earlier (because
@@ -259,7 +261,7 @@ class PrivilegedFuncUnit(FuncUnitBase[PrivilegedFn]):
                 # would normally return to (mepc value is preserved)
                 m.d.av_comb += exception.eq(1)
                 cause = Signal(ExceptionCause)
-                m.d.comb += cause.eq(Mux(async_interrupt_active[1], ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
+                m.d.comb += cause.eq(Mux(debug_interrupt_active, ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT, ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT))
                 self.exception_report(
                     m,
                     cause=cause,

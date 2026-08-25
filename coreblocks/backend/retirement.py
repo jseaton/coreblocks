@@ -110,6 +110,8 @@ class Retirement(Elaboratable):
         self.side_fx_guard = Method(i=layouts.side_fx_guard_in)
         self.dependency_manager.add_dependency(SideFxGuardKey(), self.side_fx_guard)
 
+        self.clear_debug_interrupt = Method()
+
     def elaborate(self, platform):
         m = TModule()
 
@@ -194,7 +196,7 @@ class Retirement(Elaboratable):
                 Mux(exception, ecr_entry.valid & (ecr_entry.data.rob_id == exception_rob_id), 1)
             )
 
-        debug_stall = Signal(2) # TODO enum or something
+        debug_stall = Signal(1)
 
         with m.FSM("NORMAL") as fsm:
             with m.State("NORMAL"):
@@ -208,7 +210,9 @@ class Retirement(Elaboratable):
 
                     commit_trapping = Signal()
 
-                    cause_register = self.exception_cause_get(m).data
+                    get = self.exception_cause_get(m)
+                    cause_register = get.data
+                    debug_mode = get.debug_mode
                     arch_trap = Signal(init=1)
 
                     with m.If(exception):
@@ -216,7 +220,7 @@ class Retirement(Elaboratable):
 
                         cause_entry = Signal(self.gen_params.isa.xlen)
 
-                        with m.If(cause_register.debug_mode | (cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT)):
+                        with m.If(debug_mode | (cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT)):
                             m.d.av_comb += commit_trapping.eq(1)
 
                             # Do not modify trap related CSRs
@@ -305,7 +309,7 @@ class Retirement(Elaboratable):
                                     rp_dst=entry.rob_data.rp_dst,
                                     trap=entry.exception & arch_trap,
                                     interrupt=entry.exception
-                                    & (cause_register.cause == ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT),
+                                    & ((cause_register.cause == ExceptionCause._COREBLOCKS_ASYNC_INTERRUPT) | (cause_register.cause == ExceptionCause._COREBLOCKS_DEBUG_INTERRUPT)),
                                 )
 
                         with m.Elif(i < retire_count):
@@ -339,7 +343,9 @@ class Retirement(Elaboratable):
                     self.c_rat_restore(m, entries=self.r_rat_peek(m).entries)
                     self.perf_trap_latency.stop(m)
 
-                    with m.If(~debug_stall):
+                    with m.If(debug_stall):
+                        self.clear_debug_interrupt(m) # TODO pass FTQ ptr this way?
+                    with m.Else():
                         handler_pc = Signal(self.gen_params.isa.xlen)
                         tvec_offset = Signal(self.gen_params.isa.xlen)
                         tvec_base = Signal(self.gen_params.isa.xlen)
