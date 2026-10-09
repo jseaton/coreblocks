@@ -23,12 +23,18 @@ class JTAGDebugInterface(ComponentInterface):
 
 class DebugJTAGTAP(Component):
     jtag: JTAGDebugInterface
-    dmi: DebugModuleInterface
 
     def __init__(self, gen_params: GenParams):
         super().__init__({
             "jtag": Out(JTAGDebugInterface().signature),
-            "dmi": Out(DebugModuleInterface().signature)})
+            })
+
+        layouts = gen_params.get(DebugLayouts)
+        self.dmi_read_req = Method(i=layouts.read_req_in, o=layouts.read_req_out)
+        self.dmi_read_resp = Method(o=layouts.read_req_out)
+
+        self.dmi_write_req = Method(i=layouts.write_req_in, o=layouts.write_req_out)
+        self.dmi_write_resp = Method(o=layouts.write_req_out)
 
     def elaborate(self, platform):
         m = TModule()
@@ -218,28 +224,44 @@ class DebugJTAGTAP(Component):
         # dmi
         with m.FSM():
             with m.State("Idle"):
-                with m.If(dmi_submit & self.dmi.req_ready):
-                    m.next = "Wait"
+                with m.If(dmi_submit), Transaction().body(m):
+                    with m.If(req_dmi_op == 1):
+                        result = self.dmi_read_req(m, address=req_dmi_address)
+                        with m.If(result.ready):
+                            m.d.sync += [
+                                    rsp_dmi_op.eq(result.op),
+                                    rsp_dmi_data.eq(result.data),
+                                    ]
+                            m.next = "Wait-Submit-Done"
+                        with m.Else():
+                            m.next = "Wait-Read"
+                    with m.Elif(req_dmi_op == 2):
+                        result = self.dmi_write_req(m, address=req_dmi_address, write_data=req_dmi_data)
+                        with m.If(result.ready):
+                            m.d.sync += [
+                                    rsp_dmi_op.eq(result.op),
+                                    ]
+                            m.next = "Wait-Submit-Done"
+                        with m.Else():
+                            m.next = "Wait-Write"
 
+            with m.State("Wait-Read"), Transaction().body(m):
+                result = self.dmi_read_resp(m)
+                m.d.sync += [
+                        rsp_dmi_op.eq(result.op),
+                        rsp_dmi_data.eq(result.data),
+                        ]
+
+                m.next = "Wait-Submit-Done"
+
+            with m.State("Wait-Write"), Transaction().body(m):
+                result = self.dmi_write_resp(m)
+                with m.If(result.ready):
                     m.d.sync += [
-                            self.dmi.req_op.eq(req_dmi_op),
-                            self.dmi.req_data.eq(req_dmi_data),
-                            self.dmi.req_address.eq(req_dmi_address),
-                            self.dmi.req_valid.eq(1),
-                            self.dmi.rsp_ready.eq(1)
+                            rsp_dmi_op.eq(result.op),
                             ]
 
-            with m.State("Wait"):
-                m.d.sync += self.dmi.req_valid.eq(0)
-
-                with m.If(self.dmi.rsp_valid):
                     m.next = "Wait-Submit-Done"
-
-                    m.d.sync += [
-                            rsp_dmi_op.eq(self.dmi.rsp_op),
-                            rsp_dmi_data.eq(self.dmi.rsp_data),
-                            self.dmi.rsp_ready.eq(0)
-                            ]
 
             with m.State("Wait-Submit-Done"):
                 with m.If(~dmi_submit):

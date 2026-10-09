@@ -1054,6 +1054,26 @@ class DebugLayouts:
     def __init__(self, gen_params: GenParams):
         fields = gen_params.get(CommonLayoutFields)
 
+        self.read_req_in = make_layout(
+            ("address", 32),
+        )
+
+        self.write_req_in = make_layout(
+            ("address", 32),
+            ("write_data", 32)
+        )
+
+        self.write_req_out = make_layout(
+            ("ready", 1),
+            ("op", 2)
+        )
+
+        self.read_req_out = make_layout(
+            ("ready", 1),
+            ("op", 2),
+            ("data", 32)
+        )
+
         self.handle_debug_interrupt = make_layout(
             ("active", 1)
         )

@@ -192,225 +192,16 @@ class DebugModule(Component):
         self.clear_debug_interrupt = Method()
         self.dm.add_dependency(DebugInterruptKey(), self.debug_interrupt)
 
+        layouts = gen_params.get(DebugLayouts)
+        self.read_req = Method(i=layouts.read_req_in, o=layouts.read_req_out)
+        self.read_resp = Method(o=layouts.read_req_out)
 
-    def read(self, m, address, rsp_op, rsp_data):
-        with m.Switch(address):
-            with m.Case(0x4): # data0
-                m.d.av_comb += rsp_op.eq(0) # TODO urgh such a mess of comb and sync
-                m.d.sync += rsp_data.eq(self.abstract_data[0])
-                m.next = "RESP_WAITING"
-            with m.Case(0x5): # data1
-                m.d.av_comb += rsp_op.eq(0)
-                m.d.sync += rsp_data.eq(self.abstract_data[1])
-                m.next = "RESP_WAITING"
-            with m.Case(0x10): # dmcontrol
-                m.d.av_comb += rsp_op.eq(0)
-                resp = Signal(self.dmcontrol_layout)
-                m.d.av_comb += [
-                        resp.dmactive.eq(self.dmactive),
-                        resp.ndmreset.eq(self.ndmreset),
-                        resp.hartsello.eq(self.hartsel[:10]),
-                        resp.hartselhi.eq(self.hartsel[10:])
-                        ]
-                m.d.sync += rsp_data.eq(resp)
-                m.next = "RESP_WAITING"
-            with m.Case(0x11): # dmstatus
-                m.d.av_comb += rsp_op.eq(0)
-                resp = Signal(self.dmstatus_layout)
-                m.d.av_comb += [
-                        resp.version.eq(3),
-                        resp.authenticated.eq(1),
-                        resp.anyhalted.eq((self.hartsel == 0).bool() & (self.core_state == CoreState.HALTED).bool()), # NOTE this code is only correct for single core!
-                        resp.allhalted.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.HALTED).bool()),
-                        resp.anyrunning.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.RUNNING).bool()),
-                        resp.allrunning.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.RUNNING).bool()),
-                        resp.anyunavail.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.UNAVAIL).bool()),
-                        resp.allunavail.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.UNAVAIL).bool()),
-                        resp.anynonexistent.eq(self.hartsel != 0),
-                        resp.allnonexistent.eq(self.hartsel != 0),
-                        resp.anyresumeack.eq(self.allresumeack),
-                        resp.allresumeack.eq(self.allresumeack),
-                        ]
-                m.d.sync += rsp_data.eq(resp)
-                m.next = "RESP_WAITING"
-            with m.Case(0x16): # abstractcs
-                resp = Signal(self.abstractcs_layout)
-                m.d.av_comb += [
-                        resp.datacount.eq(2),
-                        resp.cmderr.eq(self.abstract_cmderr),
-                        resp.busy.eq(self.abstract_busy),
-                        resp.progbufsize.eq(16)
-                        ]
-                m.d.sync += rsp_data.eq(resp)
-                m.next = "RESP_WAITING"
-            with m.Case(*range(0x20, 0x30)): #progbuf
-                read_pending = Signal()
-                with m.If(~read_pending):
-                    with Transaction().body(m):
-                        self.bus.request_read(m, addr=(address - 0x20) + 0x400800, sel=0xf)
-                        m.d.sync += read_pending.eq(1)
-                with m.Else():
-                    with Transaction().body(m):
-                        fetched = self.bus.get_read_response(m)
-                        m.d.sync += rsp_data.eq(fetched.data)
-                        m.d.av_comb += rsp_op.eq(0) # TODO busy stuff um this shouldn't be comb??
-                        m.d.sync += read_pending.eq(0)
-                        m.next = "RESP_WAITING"
+        self.write_req = Method(i=layouts.write_req_in, o=layouts.write_req_out)
+        self.write_resp = Method(o=layouts.write_req_out)
 
-            with m.Default():
-                m.d.av_comb += rsp_op.eq(0)
-                m.d.sync += rsp_data.eq(0)
-                m.next = "RESP_WAITING"
-
-    def write(self, m, address, data, rsp_op):
-        csr_instances = self.dm.get_dependency(CSRInstancesKey())
-        with m.Switch(address):
-            with m.Case(0x4): # data0
-                m.d.av_comb += rsp_op.eq(0)
-                m.d.sync += self.abstract_data[0].eq(data)
-                m.next = "RESP_WAITING"
-            with m.Case(0x5): # data1
-                m.d.av_comb += rsp_op.eq(0)
-                m.d.sync += self.abstract_data[1].eq(data)
-                m.next = "RESP_WAITING"
-            with m.Case(0x10): # dmcontrol
-                m.d.av_comb += rsp_op.eq(0)
-                req = Signal(self.dmcontrol_layout)
-                m.d.av_comb += [
-                        req.eq(data), # TODO lots...
-                        ]
-                m.d.sync += [
-                        self.dmactive.eq(req.dmactive),
-                        self.ndmreset.eq(req.ndmreset),
-                        self.hartsel.eq(Cat(req.hartsello, req.hartselhi))
-                        ]
-                with m.If(req.haltreq):
-                    m.d.sync += [
-                            self.debug_interrupt.eq(1),
-                            self.core_state.eq(CoreState.HALTED),
-                            self.allresumeack.eq(0)
-                            ]
-                    m.next = "RESP_WAITING" # TODO wait for halt or whatever
-                with m.Elif(req.resumereq): # TODO debug_stall first
-                    with Transaction().body(m):
-                        self.debug_interrupt.eq(0),
-                        self.leave_debug(m)
-                        pc = csr_instances.m_mode.dpc.read(m)
-                        ftq_ptr = self.ftq_commit_ptr(m)
-                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=pc.data)
-                        m.d.sync += [
-                                self.core_state.eq(CoreState.RUNNING),
-                                self.allresumeack.eq(1)
-                                ]
-                        m.next = "RESP_WAITING"
-                with m.Else():
-                    m.next = "RESP_WAITING"
-            with m.Case(0x11): # dmstatus
-                m.d.av_comb += rsp_op.eq(2)
-                m.next = "RESP_WAITING"
-            with m.Case(0x16): # abstractcs
-                m.d.av_comb += rsp_op.eq(0)
-                req = Signal(self.abstractcs_layout)
-                m.d.av_comb += [ # TODO anything else
-                                req.eq(data)
-                                ]
-                with m.If(req.cmderr): # TODO proper value
-                    m.d.sync += self.abstract_cmderr.eq(0)
-                m.next = "RESP_WAITING"
-            with m.Case(0x17): # command
-                with m.If(self.abstract_busy):
-                    m.d.av_comb += rsp_op.eq(2)
-                    m.d.sync += self.abstract_cmderr.eq(3)
-                with m.Else():
-                    m.d.sync += [
-                            self.abstract_busy.eq(1),
-                            self.abstract_reg.eq(data)
-                    ]
-                            
-                    m.d.av_comb += rsp_op.eq(0)
-                    req = Signal(self.command_layout)
-                    m.d.av_comb += [
-                        req.eq(data),
-                        self.abstract_control.eq(req.control),
-                        self.abstract_type.eq(req.cmdtype)
-                    ]
-                m.next = "RESP_WAITING"
-            with m.Case(*range(0x20, 0x30)): #progbuf
-                write_pending = Signal(2) # TODO dedup some of these
-                with m.If(write_pending == 0):
-                    with Transaction().body(m):
-                        self.bus.request_write(m, addr=(address - 0x20) + 0x400800, data=data, sel=0xf) # word aligned
-                        m.d.sync += write_pending.eq(1)
-                with m.Elif(write_pending == 1):
-                    with Transaction().body(m):
-                        fetched = self.bus.get_write_response(m) # TODO err
-                        m.d.sync += write_pending.eq(2)
-                with m.Elif(write_pending == 2):
-                    with Transaction().body(m):
-                        self.flush_icache(m)
-                        m.d.av_comb += rsp_op.eq(0)
-                        m.d.sync += write_pending.eq(0)
-                        m.next = "RESP_WAITING"
-
-            with m.Default():
-                m.d.av_comb += rsp_op.eq(0)
-                m.next = "RESP_WAITING"
 
     def elaborate(self, platform):
         m = TModule()
-
-        address = Signal(32) # TODO size
-        data = Signal(32)
-        op = Signal(2)
-
-        rsp_data = Signal(32)
-        rsp_op = Signal(2)
-
-        # TODO this probably has more wait states than necessary, but I'd rather get it right first!
-        with m.FSM():
-            with m.State("REQ_READY"):
-                m.next = "REQ_WAITING"
-                m.d.sync += self.dmi.req_ready.eq(1)
-
-            with m.State("REQ_WAITING"):
-                with m.If(self.dmi.req_valid):
-                    m.next = "REQ_PROCESSING"
-                    m.d.sync += [
-                            address.eq(self.dmi.req_address),
-                            data.eq(self.dmi.req_data),
-                            op.eq(self.dmi.req_op)
-                            ]
-
-            with m.State("REQ_PROCESSING"):
-                m.d.sync += self.dmi.req_ready.eq(0)
-                with m.If(self.dmi.req_op == 0): # NOP
-                    m.next = "RESP_WAITING"
-                    m.d.av_comb += rsp_op.eq(0)
-                    m.d.sync += rsp_data.eq(0)
-                with m.Elif(self.dmi.req_op == 1):
-                    self.read(m, address, rsp_op, rsp_data)
-                with m.Elif(self.dmi.req_op == 2):
-                    m.d.sync += rsp_data.eq(0)
-                    with m.If(self.dmactive.bool() | ((address == 0x10).bool() & (data == 1).bool())):
-                        self.write(m, address, data, rsp_op)
-                    with m.Else():
-                        m.next = "RESP_WAITING"
-
-            with m.State("RESP_WAITING"):
-                with m.If(self.dmi.rsp_ready):
-                    m.next = "RESP"
-
-            with m.State("RESP"):
-                with m.If(~self.dmi.rsp_ready):
-                    m.next = "RESP_POST"
-                m.d.sync += [
-                        self.dmi.rsp_valid.eq(1),
-                        self.dmi.rsp_data.eq(rsp_data),
-                        self.dmi.rsp_op.eq(rsp_op)
-                        ]
-            with m.State("RESP_POST"):
-                m.next = "REQ_READY"
-                m.d.sync += self.dmi.rsp_valid.eq(0)
 
         # TODO make self
         csr_instances = self.dm.get_dependency(CSRInstancesKey())
@@ -496,6 +287,176 @@ class DebugModule(Component):
 
         # m.d.sync.reset += self.ndmreset lol how does reset work in coreblocks
         #
+
+        read_pending = Signal()
+
+        @def_method(m, self.read_req)
+        def _(address):
+            read_data = Signal(32)
+            op = Signal(2)
+            ready = Signal(1)
+            m.d.comb += [
+                ready.eq(1),
+                read_data.eq(address)
+            ]
+            with m.Switch(address):
+                with m.Case(0x4): # data0
+                    m.d.comb += [read_data.eq(self.abstract_data[0])]
+                with m.Case(0x5): # data1
+                    m.d.comb += [read_data.eq(self.abstract_data[1])]
+                with m.Case(0x10): # dmcontrol
+                    resp = Signal(self.dmcontrol_layout) # TODO I'm sure there's a better way...
+                    m.d.comb += [
+                            resp.dmactive.eq(self.dmactive),
+                            resp.ndmreset.eq(self.ndmreset),
+                            resp.hartsello.eq(self.hartsel[:10]),
+                            resp.hartselhi.eq(self.hartsel[10:])
+                            ]
+                    m.d.comb += [read_data.eq(resp)]
+                with m.Case(0x11): # dmstatus
+                    resp = Signal(self.dmstatus_layout)
+                    m.d.comb += [
+                            resp.version.eq(3),
+                            resp.authenticated.eq(1),
+                            resp.anyhalted.eq((self.hartsel == 0).bool() & (self.core_state == CoreState.HALTED).bool()), # NOTE this code is only correct for single core!
+                            resp.allhalted.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.HALTED).bool()),
+                            resp.anyrunning.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.RUNNING).bool()),
+                            resp.allrunning.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.RUNNING).bool()),
+                            resp.anyunavail.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.UNAVAIL).bool()),
+                            resp.allunavail.eq((self.hartsel == 0).bool()  & (self.core_state == CoreState.UNAVAIL).bool()),
+                            resp.anynonexistent.eq(self.hartsel != 0),
+                            resp.allnonexistent.eq(self.hartsel != 0),
+                            resp.anyresumeack.eq(self.allresumeack),
+                            resp.allresumeack.eq(self.allresumeack),
+                            ]
+                    m.d.comb += [read_data.eq(resp)]
+                with m.Case(0x16): # abstractcs
+                    resp = Signal(self.abstractcs_layout)
+                    m.d.comb += [
+                            resp.datacount.eq(2),
+                            resp.cmderr.eq(self.abstract_cmderr),
+                            resp.busy.eq(self.abstract_busy),
+                            resp.progbufsize.eq(16)
+                            ]
+                    m.d.comb += [read_data.eq(resp)]
+                with m.Case(*range(0x20, 0x30)): #progbuf TODO this must block but can't...
+                    with Transaction().body(m):
+                        self.bus.request_read(m, addr=(address - 0x20) + 0x400800, sel=0xf)
+                        m.d.sync += read_pending.eq(1)
+                        m.d.comb += [ready.eq(0)]
+
+                with m.Default():
+                    pass
+
+            return {"data": read_data, "op": op, "ready": ready}
+
+        # TODO make progbuf live here and remove read_resp entirely
+        @def_method(m, self.read_resp)
+        def _():
+            with m.If(read_pending):
+                with Transaction().body(m):
+                    fetched = self.bus.get_read_response(m)
+                    # TODO busy stuff
+                    m.d.sync += read_pending.eq(0)
+                    return {"data": fetched.data, "op": 0, "ready": 1}
+            with m.Else():
+                return {"data": 0, "op": 0, "ready": 1}
+
+        csr_instances = self.dm.get_dependency(CSRInstancesKey())
+
+        write_pending = Signal(2) # TODO dedup some of these
+
+        #, ready=(self.dmactive | ((address == 0x10) & (data == 1)))) TODO
+        @def_method(m, self.write_req)
+        def _(address, write_data):
+            op = Signal(2)
+            ready = Signal(1)
+            m.d.comb += [
+                op.eq(2),
+                ready.eq(1),
+            ]
+            with m.Switch(address):
+                with m.Case(0x4): # data0
+                    m.d.sync += self.abstract_data[0].eq(write_data)
+                    m.d.comb += op.eq(0)
+                with m.Case(0x5): # data1
+                    m.d.sync += self.abstract_data[1].eq(write_data)
+                    m.d.comb += op.eq(0)
+                with m.Case(0x10): # dmcontrol
+                    req = Signal(self.dmcontrol_layout)
+                    m.d.comb += [
+                            req.eq(write_data), # TODO lots...
+                            ]
+                    m.d.sync += [
+                            self.dmactive.eq(req.dmactive),
+                            self.ndmreset.eq(req.ndmreset),
+                            self.hartsel.eq(Cat(req.hartsello, req.hartselhi))
+                            ]
+                    with m.If(req.haltreq):
+                        m.d.sync += [
+                                self.debug_interrupt.eq(1),
+                                self.core_state.eq(CoreState.HALTED),
+                                self.allresumeack.eq(0)
+                                ]
+                        m.d.comb += op.eq(0)
+                    with m.Elif(req.resumereq): # TODO debug_stall first
+                        #with Transaction().body(m):
+                        self.debug_interrupt.eq(0),
+                        self.leave_debug(m)
+                        pc = csr_instances.m_mode.dpc.read(m)
+                        ftq_ptr = self.ftq_commit_ptr(m)
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=pc.data)
+                        m.d.sync += [
+                                self.core_state.eq(CoreState.RUNNING),
+                                self.allresumeack.eq(1)
+                                ]
+                        m.d.comb += op.eq(0)
+                    with m.Else():
+                        m.d.comb += op.eq(0)
+                with m.Case(0x11): # dmstatus
+                    m.d.comb += op.eq(2)
+                with m.Case(0x16): # abstractcs
+                    req = Signal(self.abstractcs_layout)
+                    m.d.comb += [ # TODO anything else
+                                    req.eq(write_data)
+                                    ]
+                    with m.If(req.cmderr): # TODO proper value
+                        m.d.sync += self.abstract_cmderr.eq(0)
+                    m.d.comb += op.eq(0)
+                with m.Case(0x17): # command
+                    with m.If(self.abstract_busy):
+                        m.d.sync += self.abstract_cmderr.eq(3)
+                        m.d.comb += op.eq(2)
+                    with m.Else():
+                        m.d.sync += [
+                                self.abstract_busy.eq(1),
+                                self.abstract_reg.eq(write_data)
+                        ]
+                                
+                        req = Signal(self.command_layout)
+                        m.d.comb += [
+                            req.eq(write_data),
+                        ]
+                        m.d.sync += [
+                            self.abstract_control.eq(req.control),
+                            self.abstract_type.eq(req.cmdtype)
+                        ]
+                        m.d.comb += op.eq(0)
+                with m.Case(*range(0x20, 0x30)): #progbuf
+                    self.bus.request_write(m, addr=(address - 0x20) + 0x400800, data=write_data, sel=0xf) # word aligned
+                    m.d.sync += write_pending.eq(1)
+                    m.d.comb += [op.eq(0), ready.eq(0)]
+
+            return {"op": op, "ready": ready}
+
+        @def_method(m, self.write_resp)
+        def _():
+            ready = Signal()
+            fetched = self.bus.get_write_response(m) # TODO err
+            self.flush_icache(m)
+            m.d.sync += write_pending.eq(0)
+            return {"op": 0, "ready": 1}
+
 
         @def_method(m, self.clear_debug_interrupt, nonexclusive=True)
         def _():

@@ -278,6 +278,11 @@ class Core(Component):
         m.submodules.debug_jtag = self.debug_jtag
 
         # TODO make more like rest...
+        self.debug_jtag.dmi_read_req.provide(self.debug_module.read_req)
+        self.debug_jtag.dmi_read_resp.provide(self.debug_module.read_resp)
+        self.debug_jtag.dmi_write_req.provide(self.debug_module.write_req)
+        self.debug_jtag.dmi_write_resp.provide(self.debug_module.write_resp)
+
         self.debug_module.raise_debug_interrupt.provide(self.interrupt_controller.raise_debug)
         
         self.debug_module.debug_resume.provide(self.frontend.stall_ctrl.resume_from_debug)
@@ -292,7 +297,5 @@ class Core(Component):
         self.debug_module.leave_debug.provide(self.exception_information_register.leave_debug)
 
         self.retirement.clear_debug_interrupt.provide(self.debug_module.clear_debug_interrupt)
-
-        connect(m.top_module, flipped(self.debug_jtag.dmi), self.debug_module.dmi)
 
         return m
