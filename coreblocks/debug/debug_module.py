@@ -44,7 +44,6 @@ class DebugModuleInterface(ComponentInterface):
 
 class DebugModule(Component):
     dmi: DebugModuleInterface
-    bus: BusMasterInterface
 
     raise_debug_interrupt: Required[Method]
 
@@ -54,14 +53,16 @@ class DebugModule(Component):
 
     reg_get_rename: Required[Method]
 
-    def __init__(self, gen_params: GenParams, bus: BusMasterInterface):
+    def __init__(self, gen_params: GenParams, progbuf: Memory):
         super().__init__({"dmi": Out(DebugModuleInterface().signature)})
+
+        self.progbuf = progbuf
+        self.progbuf_read = progbuf.read_port()
+        self.progbuf_write = progbuf.write_port()
 
         self.dm = DependencyContext.get()
 
         self.gen_params = gen_params
-
-        self.bus = self.dm.get_dependency(CommonBusDataKey()) # bus
 
         self.dmactive = Signal()
         self.ndmreset = Signal()
@@ -81,6 +82,8 @@ class DebugModule(Component):
         self.abstract_busy = Signal()
         self.abstract_cmderr = Signal(3)
         self.abstract_reg = Signal(32)
+
+        #self.progbuf = Array([Signal(32)]*6) # TODO count
 
         self.abstract_data = Array([Signal(32)]*2) # yes, just the two hopefully
 
@@ -194,10 +197,7 @@ class DebugModule(Component):
 
         layouts = gen_params.get(DebugLayouts)
         self.read_req = Method(i=layouts.read_req_in, o=layouts.read_req_out)
-        self.read_resp = Method(o=layouts.read_req_out)
-
         self.write_req = Method(i=layouts.write_req_in, o=layouts.write_req_out)
-        self.write_resp = Method(o=layouts.write_req_out)
 
 
     def elaborate(self, platform):
@@ -234,7 +234,7 @@ class DebugModule(Component):
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         ftq_ptr = self.ftq_commit_ptr(m)
-                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x01002000) # TODO proper pc lol
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x02002000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
                         self.debug_guard(m)
@@ -258,7 +258,7 @@ class DebugModule(Component):
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         ftq_ptr = self.ftq_commit_ptr(m)
-                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x01002000) # TODO proper pc lol
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x02002000) # TODO proper pc lol
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
                         self.debug_guard(m)
@@ -339,28 +339,16 @@ class DebugModule(Component):
                             resp.progbufsize.eq(16)
                             ]
                     m.d.comb += [read_data.eq(resp)]
-                with m.Case(*range(0x20, 0x30)): #progbuf TODO this must block but can't...
-                    with Transaction().body(m):
-                        self.bus.request_read(m, addr=(address - 0x20) + 0x400800, sel=0xf)
-                        m.d.sync += read_pending.eq(1)
-                        m.d.comb += [ready.eq(0)]
+                with m.Case(*range(0x20, 0x30)):
+                        m.d.comb += [
+                            self.progbuf_read.addr.eq(address - 0x20),
+                            read_data.eq(self.progbuf_read.data)
+                        ]
 
                 with m.Default():
                     pass
 
             return {"data": read_data, "op": op, "ready": ready}
-
-        # TODO make progbuf live here and remove read_resp entirely
-        @def_method(m, self.read_resp)
-        def _():
-            with m.If(read_pending):
-                with Transaction().body(m):
-                    fetched = self.bus.get_read_response(m)
-                    # TODO busy stuff
-                    m.d.sync += read_pending.eq(0)
-                    return {"data": fetched.data, "op": 0, "ready": 1}
-            with m.Else():
-                return {"data": 0, "op": 0, "ready": 1}
 
         csr_instances = self.dm.get_dependency(CSRInstancesKey())
 
@@ -443,20 +431,13 @@ class DebugModule(Component):
                         ]
                         m.d.comb += op.eq(0)
                 with m.Case(*range(0x20, 0x30)): #progbuf
-                    self.bus.request_write(m, addr=(address - 0x20) + 0x400800, data=write_data, sel=0xf) # word aligned
-                    m.d.sync += write_pending.eq(1)
-                    m.d.comb += [op.eq(0), ready.eq(0)]
+                    m.d.comb += [
+                        self.progbuf_write.addr.eq(address - 0x20),
+                        self.progbuf_write.data.eq(write_data),
+                        self.progbuf_write.en.eq(1)
+                    ]
 
             return {"op": op, "ready": ready}
-
-        @def_method(m, self.write_resp)
-        def _():
-            ready = Signal()
-            fetched = self.bus.get_write_response(m) # TODO err
-            self.flush_icache(m)
-            m.d.sync += write_pending.eq(0)
-            return {"op": 0, "ready": 1}
-
 
         @def_method(m, self.clear_debug_interrupt, nonexclusive=True)
         def _():

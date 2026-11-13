@@ -30,7 +30,7 @@ from coreblocks.scheduler.scheduler import Scheduler
 from coreblocks.backend.announcement import ResultAnnouncement
 from coreblocks.backend.retirement import Retirement
 from coreblocks.peripherals.bus_adapter import WishboneMasterAdapter
-from coreblocks.peripherals.wishbone import WishboneMaster, WishboneInterface
+from coreblocks.peripherals.wishbone import WishboneMaster, WishboneMemorySlave, WishboneInterface
 from coreblocks.priv.vmem.tlb import FullyAssociativeTLB, SetAssociativeTLB
 from coreblocks.priv.vmem.walker import PageTableWalker
 from coreblocks.debug.debug_module import DebugModule
@@ -60,7 +60,7 @@ class Core(Component):
         signature = {
             "wb_instr": Out(WishboneInterface(gen_params.wb_params).signature),
             "wb_data": Out(WishboneInterface(gen_params.wb_params).signature),
-            "wb_debug": Out(WishboneInterface(gen_params.wb_params).signature),
+            "wb_debug": In(WishboneInterface(gen_params.wb_params).signature),
             "interrupts": In(ISA_RESERVED_INTERRUPTS + gen_params.interrupt_custom_count),
             "debug": Out(JTAGDebugInterface().signature)
         }
@@ -75,14 +75,16 @@ class Core(Component):
 
         self.wb_master_instr = WishboneMaster(self.gen_params.wb_params, "instr")
         self.wb_master_data = WishboneMaster(self.gen_params.wb_params, "data")
-        self.wb_master_debug = WishboneMaster(self.gen_params.wb_params, "debug")
+        self.wb_slave_debug = WishboneMemorySlave(self.gen_params.wb_params, shape=32, depth=8, init=[], start=0x02002000)
+        self.wb_slave_debug.base_addr = 0x02002000
+        self.wb_slave_debug.addr_space_size = 0x100
 
         self.bus_master_instr_adapter = WishboneMasterAdapter(self.wb_master_instr)
         self.bus_master_data_adapter = WishboneMasterAdapter(
             self.wb_master_data,
             port_count=2 if self.gen_params.vmem_params.supported_non_bare_schemes else 1,
         )
-        self.bus_master_debug_adapter = WishboneMasterAdapter(self.wb_master_debug)
+        #self.bus_master_debug_adapter = WishboneMasterAdapter(self.wb_master_debug)
 
         self.dm.add_dependency(CommonBusDataKey(), self.bus_master_data_adapter.ports[0])
 
@@ -159,7 +161,7 @@ class Core(Component):
             tags=range(gen_params.announcement_superscalarity + 1),
         )
 
-        self.debug_module = DebugModule(self.gen_params, self.bus_master_debug_adapter)
+        self.debug_module = DebugModule(self.gen_params, self.wb_slave_debug.mem)
         self.debug_jtag = DebugJTAGTAP(self.gen_params)
 
 
@@ -170,13 +172,13 @@ class Core(Component):
 
         connect(m.top_module, flipped(self.wb_instr), self.wb_master_instr.wb_master)
         connect(m.top_module, flipped(self.wb_data), self.wb_master_data.wb_master)
-        connect(m.top_module, flipped(self.wb_debug), self.wb_master_debug.wb_master)
+        #connect(m.top_module, flipped(self.wb_debug), self.wb_slave_debug.bus)
 
         connect(m.top_module, flipped(self.debug), self.debug_jtag.jtag)
 
         m.submodules.wb_master_instr = self.wb_master_instr
         m.submodules.wb_master_data = self.wb_master_data
-        m.submodules.wb_master_debug = self.wb_master_debug
+        m.submodules.wb_slave_debug = self.wb_slave_debug
 
         m.submodules.bus_master_instr_adapter = self.bus_master_instr_adapter
         m.submodules.bus_master_data_adapter = self.bus_master_data_adapter
@@ -190,7 +192,7 @@ class Core(Component):
             m.submodules.l1i_tlb = self.l1i_tlb
             m.submodules.l1d_tlb = self.l1d_tlb
         
-        m.submodules.bus_master_debug_adapter = self.bus_master_debug_adapter
+        #m.submodules.bus_master_debug_adapter = self.bus_master_debug_adapter
 
         m.submodules.frontend = self.frontend
         self.frontend.get_exception_information.provide(self.exception_information_register.get)
@@ -279,9 +281,7 @@ class Core(Component):
 
         # TODO make more like rest...
         self.debug_jtag.dmi_read_req.provide(self.debug_module.read_req)
-        self.debug_jtag.dmi_read_resp.provide(self.debug_module.read_resp)
         self.debug_jtag.dmi_write_req.provide(self.debug_module.write_req)
-        self.debug_jtag.dmi_write_resp.provide(self.debug_module.write_resp)
 
         self.debug_module.raise_debug_interrupt.provide(self.interrupt_controller.raise_debug)
         

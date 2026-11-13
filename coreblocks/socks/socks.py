@@ -9,6 +9,7 @@ from coreblocks.priv.traps.interrupt_controller import ISA_RESERVED_INTERRUPTS
 from coreblocks.socks.clint import ClintPeriph
 from coreblocks.socks.peripheral import bus_in_periph_range
 from coreblocks.socks.plic import PlicPeriph
+from coreblocks.debug.debug_jtag import JTAGDebugInterface
 
 CLINT_BASE = 0xE1000000
 PLIC_BASE = 0xE2000000
@@ -41,6 +42,7 @@ class Socks(Component):
                 "interrupts": In(
                     (1 if with_plic else ISA_RESERVED_INTERRUPTS) + core_gen_params.interrupt_custom_count
                 ),
+                "debug": Out(JTAGDebugInterface().signature)
             }
         )
 
@@ -55,6 +57,9 @@ class Socks(Component):
         else:
             self.plic = None
 
+        #if core.debug
+        self.wb_debug = core.wb_slave_debug
+
         self.core = core
         self.core_gen_params = core_gen_params
 
@@ -62,28 +67,44 @@ class Socks(Component):
         m = Module()
 
         muxer_ssel = Signal(3)
+        imuxer_ssel = Signal(2)
         periph_muxer = WishboneMuxer(self.core_gen_params.wb_params, muxer_ssel)
+        instr_muxer = WishboneMuxer(self.core_gen_params.wb_params, imuxer_ssel)
 
-        connect(m, self.core.wb_instr, flipped(self.wb_instr))
+        #connect(m, self.core.wb_instr, flipped(self.wb_instr))
+        connect(m, self.core.wb_instr, instr_muxer.master_wb)
 
         connect(m, self.core.wb_data, periph_muxer.master_wb)
+
+        connect(m, self.core.debug, flipped(self.debug))
         connect(m, periph_muxer.slaves[0], flipped(self.wb_data))
 
         connect(m, periph_muxer.slaves[1], self.clint.bus)
         if self.plic:
             connect(m, periph_muxer.slaves[2], self.plic.bus)
 
+        connect(m, instr_muxer.slaves[0], flipped(self.wb_instr))
+        if self.wb_debug:
+            connect(m, instr_muxer.slaves[1], self.wb_debug.bus)
+
         clint_addr = Signal()
         plic_addr = Signal()
+        debug_addr = Signal()
         m.d.comb += clint_addr.eq(bus_in_periph_range(self.core.wb_data, self.clint))
         if self.plic:
             m.d.comb += plic_addr.eq(bus_in_periph_range(self.core.wb_data, self.plic))
+        if self.wb_debug:
+            m.d.comb += debug_addr.eq(bus_in_periph_range(self.core.wb_instr, self.wb_debug))
         m.d.comb += muxer_ssel.eq(Cat(~(clint_addr | plic_addr), clint_addr, plic_addr))
+        m.d.comb += imuxer_ssel.eq(Cat(~(debug_addr), debug_addr))
 
         m.submodules.clint = self.clint
         if self.plic:
             m.submodules.plic = self.plic
+        #if self.debug:
+        #    m.submodules.debug = self.debug
         m.submodules.periph_muxer = periph_muxer
+        m.submodules.instr_muxer = instr_muxer
 
         m.submodules.core = self.core
 

@@ -498,6 +498,11 @@ class WishboneMemorySlave(Component):
         if self.granularity not in (8, 16, 32, 64):
             raise RuntimeError("Granularity has to be one of: 8, 16, 32, 64")
 
+        self.start = 0
+        if "start" in kwargs:
+            self.start = 0x800800 # kwargs["start"]
+            del kwargs["start"]
+
         self.mem = memory.Memory(**kwargs)
 
     def elaborate(self, platform):
@@ -511,7 +516,7 @@ class WishboneMemorySlave(Component):
             with m.State("Start"):
                 with m.If(self.bus.stb & self.bus.cyc):
                     with m.If(~self.bus.we):
-                        with m.If(self.bus.adr < self.mem.depth):
+                        with m.If((self.bus.adr >= self.start) & (self.bus.adr < self.start + self.mem.depth)):
                             m.d.comb += rdport.addr.eq(self.bus.adr)
                             # asserting rdport.en not required in case of a transparent port
                             m.next = "Read"
