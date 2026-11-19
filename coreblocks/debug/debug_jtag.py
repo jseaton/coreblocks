@@ -11,7 +11,7 @@ from transactron.lib.simultaneous import condition
 from transactron.utils.amaranth_ext.component_interface import ComponentInterface, CIn, COut
 from transactron import *
 
-from coreblocks.debug.debug_module import DebugModuleInterface, ABITS
+from coreblocks.debug.debug_module import ABITS
 
 
 class JTAGDebugInterface(ComponentInterface):

@@ -377,7 +377,6 @@ class InternalInterruptController(Component):
         log.assertion(m, t.run | ~needs_run, "Interrupt controller transaction did not run")
 
         interrupt_priority = [
-            InterruptCauseNumber.DBG,
             InterruptCauseNumber.MEI,
             InterruptCauseNumber.MSI,
             InterruptCauseNumber.MTI,

@@ -28,23 +28,7 @@ class CoreState(Enum):
 
 ABITS = 16 # TODO make smaller...
 
-# Suggested DMI from A.3 of debug spec, used by rocket
-class DebugModuleInterface(ComponentInterface):
-    def __init__(self):
-        self.req_ready = COut(1)
-        self.req_valid = CIn(1)
-        self.req_op = CIn(2)
-        self.req_address = CIn(ABITS)
-        self.req_data = CIn(32)
-
-        self.rsp_ready = CIn(1)
-        self.rsp_valid = COut(1)
-        self.rsp_op = COut(2)
-        self.rsp_data = COut(32)
-
 class DebugModule(Component):
-    dmi: DebugModuleInterface
-
     raise_debug_interrupt: Required[Method]
 
     rf_read_req: Required[Methods]
@@ -54,8 +38,6 @@ class DebugModule(Component):
     reg_get_rename: Required[Method]
 
     def __init__(self, gen_params: GenParams, progbuf: Memory):
-        super().__init__({"dmi": Out(DebugModuleInterface().signature)})
-
         self.progbuf = progbuf
         self.progbuf_read = progbuf.read_port()
         self.progbuf_write = progbuf.write_port()
@@ -82,8 +64,6 @@ class DebugModule(Component):
         self.abstract_busy = Signal()
         self.abstract_cmderr = Signal(3)
         self.abstract_reg = Signal(32)
-
-        #self.progbuf = Array([Signal(32)]*6) # TODO count
 
         self.abstract_data = Array([Signal(32)]*2) # yes, just the two hopefully
 

@@ -34,7 +34,7 @@ class Socks(Component):
     In both cases MTI and MSI are ignored and provided from CLINT.
     """
 
-    def __init__(self, core: Core, core_gen_params: GenParams, with_plic: bool = True):
+    def __init__(self, core: Core, core_gen_params: GenParams, with_plic: bool = True, with_debug: bool = True):
         super().__init__(
             {
                 "wb_instr": Out(WishboneInterface(core_gen_params.wb_params).signature),
@@ -57,8 +57,10 @@ class Socks(Component):
         else:
             self.plic = None
 
-        #if core.debug
-        self.wb_debug = core.wb_slave_debug
+        if with_debug:
+            self.wb_debug = core.wb_slave_debug
+        else:
+            self.wb_debug = None
 
         self.core = core
         self.core_gen_params = core_gen_params
@@ -71,7 +73,6 @@ class Socks(Component):
         periph_muxer = WishboneMuxer(self.core_gen_params.wb_params, muxer_ssel)
         instr_muxer = WishboneMuxer(self.core_gen_params.wb_params, imuxer_ssel)
 
-        #connect(m, self.core.wb_instr, flipped(self.wb_instr))
         connect(m, self.core.wb_instr, instr_muxer.master_wb)
 
         connect(m, self.core.wb_data, periph_muxer.master_wb)

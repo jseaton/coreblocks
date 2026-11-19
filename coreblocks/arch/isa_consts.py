@@ -202,7 +202,6 @@ class TrapVectorMode(Enum, shape=2):
 
 @unique
 class InterruptCauseNumber(IntEnum):
-    DBG = 0
     SSI = 1  # supervisor software interrupt
     MSI = 3  # machine software interrupt
     STI = 5  # supervisor timer interrupt

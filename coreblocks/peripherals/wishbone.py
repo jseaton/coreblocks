@@ -464,7 +464,6 @@ class WishboneArbiter(Component):
 
         return m
 
-
 class WishboneMemorySlave(Component):
     """Wishbone slave with memory
     Wishbone slave interface with addressable memory underneath.

@@ -60,7 +60,6 @@ class Core(Component):
         signature = {
             "wb_instr": Out(WishboneInterface(gen_params.wb_params).signature),
             "wb_data": Out(WishboneInterface(gen_params.wb_params).signature),
-            "wb_debug": In(WishboneInterface(gen_params.wb_params).signature),
             "interrupts": In(ISA_RESERVED_INTERRUPTS + gen_params.interrupt_custom_count),
             "debug": Out(JTAGDebugInterface().signature)
         }
