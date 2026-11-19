@@ -188,7 +188,7 @@ class JumpBranchFuncUnit(FuncUnitBase[JumpBranchFn]):
                     mtval=instr.jmp_addr,
                 )
 
-            with m.Elif((async_interrupt_active.any() | debug_interrupt_active) & ~is_auipc):
+            with m.Elif((async_interrupt_active | debug_interrupt_active) & ~is_auipc):
                 # Jump instructions are entry points for async interrupts.
                 # This way we can store known pc via report to global exception register and avoid it in ROB.
                 # Exceptions have priority, because the instruction that reports async interrupt is commited

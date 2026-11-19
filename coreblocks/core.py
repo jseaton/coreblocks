@@ -282,8 +282,6 @@ class Core(Component):
         self.debug_jtag.dmi_read_req.provide(self.debug_module.read_req)
         self.debug_jtag.dmi_write_req.provide(self.debug_module.write_req)
 
-        self.debug_module.raise_debug_interrupt.provide(self.interrupt_controller.raise_debug)
-        
         self.debug_module.debug_resume.provide(self.frontend.stall_ctrl.resume_from_debug)
         self.debug_module.debug_guard.provide(self.frontend.stall_ctrl.debug_guard)
         self.debug_module.ftq_commit_ptr.provide(retirement.ftq_commit_ptr)

@@ -245,7 +245,7 @@ class CSRUnit(FuncBlock, Elaboratable):
                     pc=instr.pc,
                     mtval=mtval,
                 )
-            with m.Elif(interrupt.any() | debug):
+            with m.Elif(interrupt | debug):
                 # SPEC: "These conditions for an interrupt trap to occur [..] must also be evaluated immediately
                 # following  [..] an explicit write to a CSR on which these interrupt trap conditions expressly depend."
                 # At this time CSR operation is finished. If it caused triggering an interrupt, it would be represented
@@ -272,7 +272,7 @@ class CSRUnit(FuncBlock, Elaboratable):
                 "rob_id": instr.rob_id,
                 "rp_dst": instr.rp_dst,
                 "result": current_result,
-                "exception": exception | interrupt.any() | debug,
+                "exception": exception | interrupt | debug,
             }
 
         return m

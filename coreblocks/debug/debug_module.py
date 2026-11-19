@@ -28,6 +28,8 @@ class CoreState(Enum):
 
 ABITS = 16 # TODO make smaller...
 
+PROBGUF_PC = 0x02002000 # TODO can this be configurable?
+
 class DebugModule(Component):
     raise_debug_interrupt: Required[Method]
 
@@ -214,7 +216,7 @@ class DebugModule(Component):
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         ftq_ptr = self.ftq_commit_ptr(m)
-                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x02002000) # TODO proper pc lol
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=PROBGUF_PC)
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
                         self.debug_guard(m)
@@ -238,7 +240,7 @@ class DebugModule(Component):
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         ftq_ptr = self.ftq_commit_ptr(m)
-                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=0x02002000) # TODO proper pc lol
+                        self.debug_resume(m, ftq_ptr=ftq_ptr, pc=PROBGUF_PC)
                         m.next = "Wait"
                     with m.State("Wait"), Transaction().body(m):
                         self.debug_guard(m)
@@ -368,7 +370,6 @@ class DebugModule(Component):
                                 ]
                         m.d.comb += op.eq(0)
                     with m.Elif(req.resumereq): # TODO debug_stall first
-                        #with Transaction().body(m):
                         self.debug_interrupt.eq(0),
                         self.leave_debug(m)
                         pc = csr_instances.m_mode.dpc.read(m)
