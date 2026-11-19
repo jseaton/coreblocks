@@ -210,7 +210,7 @@ class DebugModule(Component):
                         with m.Else():
                             m.next = "Done"
                     with m.State("Flush"), Transaction().body(m):
-                        # self.flush_icache(m)
+                        self.flush_icache(m)
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         ftq_ptr = self.ftq_commit_ptr(m)
@@ -234,7 +234,7 @@ class DebugModule(Component):
                         self.rf_write(m, reg_id=r.reg_id, reg_val=self.abstract_data[0])
                         m.next = "Flush"
                     with m.State("Flush"), Transaction().body(m):
-                        # self.flush_icache(m)
+                        self.flush_icache(m)
                         m.next = "Exec"
                     with m.State("Exec"), Transaction().body(m):
                         ftq_ptr = self.ftq_commit_ptr(m)
@@ -411,6 +411,7 @@ class DebugModule(Component):
                         ]
                         m.d.comb += op.eq(0)
                 with m.Case(*range(0x20, 0x30)): #progbuf
+                    self.flush_icache(m) # TODO we shouldn't be icached but we uh, are
                     m.d.comb += [
                         self.progbuf_write.addr.eq(address - 0x20),
                         self.progbuf_write.data.eq(write_data),
