@@ -1054,6 +1054,79 @@ class DebugLayouts:
     def __init__(self, gen_params: GenParams):
         fields = gen_params.get(CommonLayoutFields)
 
+        self.dmcontrol= make_layout(
+            ("dmactive", 1),
+            ("ndmreset", 1),
+            ("clrresethaltreq",  1),
+            ("setresethaltreq", 1),
+            ("clrkeepalive", 1),
+            ("setkeepalive", 1),
+            ("hartselhi", 10),
+            ("hartsello", 10),
+            ("hasel", 1),
+            ("ackunavail", 1),
+            ("ackhavereset", 1),
+            ("hartreset", 1),
+            ("resumereq", 1),
+            ("haltreq", 1)
+        )
+
+        self.dmstatus= make_layout(
+            ("version", 4),
+            ("confstrptrvalid", 1),
+            ("hasresethaltreq", 1),
+            ("authbusy", 1),
+            ("authenticated", 1),
+            ("anyhalted", 1),
+            ("allhalted", 1),
+            ("anyrunning", 1),
+            ("allrunning", 1),
+            ("anyunavail", 1),
+            ("allunavail", 1),
+            ("anynonexistent", 1),
+            ("allnonexistent", 1),
+            ("anyresumeack", 1),
+            ("allresumeack", 1),
+            ("anyhavereset", 1),
+            ("allhavereset", 1),
+            ("0", 2),
+            ("impebreak", 1),
+            ("stickyunavail", 1),
+            ("ndmresetpending", 1),
+        )
+
+        self.abstractcs= make_layout(
+            ("datacount", 4),
+            ("0_0", 4),
+            ("cmderr", 3),
+            ("relaxedpriv", 1),
+            ("busy", 1),
+            ("0_1", 11),
+            ("progbufsize", 5),
+        )
+
+        self.access_register= make_layout(
+            ("regno", 16),
+            ("write", 1),
+            ("transfer", 1),
+            ("postexec", 1),
+            ("aarpostincrement", 1),
+            ("aarsize", 3),
+            ("0", 1),
+            ("cmdtype", 8),
+        )
+
+        self.access_memory= make_layout( # TODO ditch?
+            ("0_0", 14),
+            ("target-specific", 2),
+            ("write", 1),
+            ("0_1", 2),
+            ("aampostincrement", 1),
+            ("aamsize", 3),
+            ("aamvirtual", 1),
+            ("cmdtype", 8),
+        )
+
         self.read_req_in = make_layout(
             ("address", 32),
         )

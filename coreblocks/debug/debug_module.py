@@ -70,85 +70,16 @@ class DebugModule(Component):
         self.abstract_data = Array([Signal(32)]*2) # yes, just the two hopefully
 
         # TODO move layouts
-        self.dmcontrol_layout = StructLayout({
-            "dmactive": 1,
-            "ndmreset": 1,
-            "clrresethaltreq":  1,
-            "setresethaltreq": 1,
-            "clrkeepalive" : 1,
-            "setkeepalive" : 1,
-            "hartselhi" : 10,
-            "hartsello" : 10,
-            "hasel" : 1,
-            "ackunavail" : 1,
-            "ackhavereset" : 1,
-            "hartreset" : 1,
-            "resumereq" : 1,
-            "haltreq" : 1,
-        })
 
-        self.dmstatus_layout = StructLayout({
-            "version": 4,
-            "confstrptrvalid": 1,
-            "hasresethaltreq":  1,
-            "authbusy": 1,
-            "authenticated" : 1,
-            "anyhalted" : 1,
-            "allhalted" : 1,
-            "anyrunning" : 1,
-            "allrunning" : 1,
-            "anyunavail" : 1,
-            "allunavail" : 1,
-            "anynonexistent" : 1,
-            "allnonexistent" : 1,
-            "anyresumeack" : 1,
-            "allresumeack" : 1,
-            "anyhavereset" : 1,
-            "allhavereset" : 1,
-            "0" : 2,
-            "impebreak" : 1,
-            "stickyunavail" : 1,
-            "ndmresetpending" : 1,
-        })
-
-        self.abstractcs_layout = StructLayout({
-            "datacount": 4,
-            "0_0": 4,
-            "cmderr":  3,
-            "relaxedpriv": 1,
-            "busy" : 1,
-            "0_1" : 11,
-            "progbufsize" : 5,
-        })
 
         self.command_layout = StructLayout({
             "control" : len(self.abstract_control),
             "cmdtype" : len(self.abstract_type)
             })
 
-        self.access_register_layout = StructLayout({
-            "regno": 16,
-            "write": 1,
-            "transfer": 1,
-            "postexec": 1,
-            "aarpostincrement" : 1,
-            "aarsize" : 3,
-            "0": 1,
-            "cmdtype" : 8,
-        })
+        self.layouts = self.gen_params.get(DebugLayouts)
 
-        self.access_memory_layout = StructLayout({
-            "0_0": 14,
-            "target-specific": 2,
-            "write": 1,
-            "0_1": 2,
-            "aampostincrement" : 1,
-            "aamsize" : 3,
-            "aamvirtual": 1,
-            "cmdtype" : 8,
-        })
-
-        layouts = self.gen_params.get(FetchLayouts)
+        fetch_layouts = self.gen_params.get(FetchLayouts)
 
         # For halting
         self.raise_debug_interrupt = Method()
@@ -157,7 +88,7 @@ class DebugModule(Component):
         self.flush_icache = self.dm.get_dependency(FlushICacheKey())
 
         # For resuming
-        self.debug_resume = Method(i=layouts.backend_redirect)
+        self.debug_resume = Method(i=fetch_layouts.backend_redirect)
         self.debug_guard = Method()
         self.leave_debug = Method()
         self.ftq_commit_ptr = Method(o=self.gen_params.get(FTQPtrLayout))
@@ -177,9 +108,8 @@ class DebugModule(Component):
         self.clear_debug_interrupt = Method()
         self.dm.add_dependency(DebugInterruptKey(), self.debug_interrupt)
 
-        layouts = gen_params.get(DebugLayouts)
-        self.read_req = Method(i=layouts.read_req_in, o=layouts.read_req_out)
-        self.write_req = Method(i=layouts.write_req_in, o=layouts.write_req_out)
+        self.read_req = Method(i=self.layouts.read_req_in, o=self.layouts.read_req_out)
+        self.write_req = Method(i=self.layouts.write_req_in, o=self.layouts.write_req_out)
 
 
     def elaborate(self, platform):
@@ -190,7 +120,7 @@ class DebugModule(Component):
 
         with m.If(self.abstract_busy), m.Switch(self.abstract_type):
             with m.Case(0): # Access Register
-                arreq = Signal(self.access_register_layout)
+                arreq = Signal(self.layouts.access_register)
                 m.d.av_comb += [
                     arreq.eq(self.abstract_reg),
                 ]
@@ -287,7 +217,7 @@ class DebugModule(Component):
                 with m.Case(0x5): # data1
                     m.d.comb += [read_data.eq(self.abstract_data[1])]
                 with m.Case(0x10): # dmcontrol
-                    resp = Signal(self.dmcontrol_layout) # TODO I'm sure there's a better way...
+                    resp = Signal(self.layouts.dmcontrol) # TODO I'm sure there's a better way...
                     m.d.comb += [
                             resp.dmactive.eq(self.dmactive),
                             resp.ndmreset.eq(self.ndmreset),
@@ -296,7 +226,7 @@ class DebugModule(Component):
                             ]
                     m.d.comb += [read_data.eq(resp)]
                 with m.Case(0x11): # dmstatus
-                    resp = Signal(self.dmstatus_layout)
+                    resp = Signal(self.layouts.dmstatus)
                     m.d.comb += [
                             resp.version.eq(3),
                             resp.authenticated.eq(1),
@@ -313,7 +243,7 @@ class DebugModule(Component):
                             ]
                     m.d.comb += [read_data.eq(resp)]
                 with m.Case(0x16): # abstractcs
-                    resp = Signal(self.abstractcs_layout)
+                    resp = Signal(self.layouts.abstractcs)
                     m.d.comb += [
                             resp.datacount.eq(2),
                             resp.cmderr.eq(self.abstract_cmderr),
@@ -353,7 +283,7 @@ class DebugModule(Component):
                     m.d.sync += self.abstract_data[1].eq(write_data)
                     m.d.comb += op.eq(0)
                 with m.Case(0x10): # dmcontrol
-                    req = Signal(self.dmcontrol_layout)
+                    req = Signal(self.layouts.dmcontrol)
                     m.d.comb += [
                             req.eq(write_data), # TODO lots...
                             ]
@@ -385,7 +315,7 @@ class DebugModule(Component):
                 with m.Case(0x11): # dmstatus
                     m.d.comb += op.eq(2)
                 with m.Case(0x16): # abstractcs
-                    req = Signal(self.abstractcs_layout)
+                    req = Signal(self.layouts.abstractcs)
                     m.d.comb += [ # TODO anything else
                                     req.eq(write_data)
                                     ]
